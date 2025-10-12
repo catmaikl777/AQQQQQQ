@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Онлайн чат</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app">
+    <aside id="sidebar">
+      <h1>Онлайн чат</h1>
+      <div id="userPanel">
+        <input id="nameInput" placeholder="Ваше имя" />
+        <button id="setName">Сменить имя</button>
+      </div>
+      <div id="users">
+        <h2>Пользователи</h2>
+        <ul id="userList"></ul>
+      </div>
+    </aside>
+
+    <main id="chat">
+      <div id="messages"></div>
+      <form id="messageForm">
+        <input id="messageInput" autocomplete="off" placeholder="Напишите сообщение..." />
+        <button type="submit">Отправить</button>
+      </form>
+    </main>
+  </div>
+
+  <script src="/client.js"></script>
+</body>
+</html>
