@@ -1,5 +1,4 @@
 {
-<<<<<<< HEAD
   "name": "chat-app",
   "version": "1.0.0",
   "description": "Real-time chat application with PostgreSQL",
@@ -15,19 +14,11 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "keywords": ["chat", "websocket", "postgresql"],
+  "keywords": [
+    "chat",
+    "websocket",
+    "postgresql"
+  ],
   "author": "Your Name",
   "license": "MIT"
 }
-=======
-  "name": "simple-websocket-chat",
-  "version": "1.0.0",
-  "private": true,
-  "scripts": {
-    "start": "node server.js"
-  },
-  "dependencies": {
-    "ws": "^8.13.0"
-  }
-}
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
