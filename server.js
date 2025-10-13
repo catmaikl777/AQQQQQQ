@@ -1,8 +1,12 @@
+<<<<<<< HEAD
 // server.js
+=======
+>>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
+<<<<<<< HEAD
 const { Pool } = require('pg');
 
 // Настройка подключения к PostgreSQL для Render
@@ -71,10 +75,13 @@ async function initializeDatabase() {
     console.error('Error creating database tables:', error);
   }
 }
+=======
+>>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PORT = process.env.PORT || 3000;
 
+<<<<<<< HEAD
 // Функции для работы с базой данных (остаются те же)
 const db = {
   async findOrCreateUser(username) {
@@ -275,6 +282,9 @@ async function initializeDatabase() {
 }
 
 // Static file server (остается тот же)
+=======
+// Simple static file server
+>>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
 const server = http.createServer((req, res) => {
   let filePath = req.url;
   if (filePath === '/') filePath = '/index.html';
@@ -303,6 +313,7 @@ const server = http.createServer((req, res) => {
 });
 
 const wss = new WebSocket.Server({ noServer: true });
+<<<<<<< HEAD
 const clients = new Map();
 
 function broadcast(data, except = null) {
@@ -310,10 +321,21 @@ function broadcast(data, except = null) {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN && client !== except) {
       client.send(raw);
+=======
+
+let clientId = 1;
+
+function broadcast(data, except) {
+  const raw = JSON.stringify(data);
+  wss.clients.forEach((c) => {
+    if (c.readyState === WebSocket.OPEN && c !== except) {
+      c.send(raw);
+>>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
     }
   });
 }
 
+<<<<<<< HEAD
 async function updateOnlineUsers() {
   try {
     const onlineUsers = await db.getOnlineUsers();
@@ -367,6 +389,50 @@ wss.on('connection', async (ws) => {
 
   // Остальная логика обработки сообщений остается той же...
   // [Вставьте сюда обработчики сообщений из предыдущей версии]
+=======
+wss.on('connection', (ws) => {
+  ws.id = clientId++;
+  ws.name = `User${ws.id}`;
+
+  // Inform the connected client about its assigned id and name
+  ws.send(JSON.stringify({ type: 'init', id: ws.id, name: ws.name }));
+
+  // Inform others
+  broadcast({ type: 'system', text: `${ws.name} вошёл в чат` }, ws);
+
+  ws.on('message', (msg) => {
+    let data;
+    try {
+      data = JSON.parse(msg.toString());
+    } catch (e) {
+      return;
+    }
+
+    if (data.type === 'setName') {
+      const old = ws.name;
+      ws.name = String(data.name || '').trim() || ws.name;
+      broadcast({ type: 'system', text: `${old} сменил имя на ${ws.name}` });
+      return;
+    }
+
+    if (data.type === 'message') {
+      const text = String(data.text || '').trim();
+      if (!text) return;
+      const payload = {
+        type: 'message',
+        id: ws.id,
+        name: ws.name,
+        text,
+        ts: Date.now()
+      };
+      broadcast(payload);
+    }
+  });
+
+  ws.on('close', () => {
+    broadcast({ type: 'system', text: `${ws.name} покинул чат` });
+  });
+>>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
 });
 
 server.on('upgrade', (req, socket, head) => {
@@ -375,6 +441,7 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
+<<<<<<< HEAD
 // Очистка старых сессий
 async function cleanupOldSessions() {
   try {
@@ -409,3 +476,8 @@ process.on('SIGTERM', async () => {
   await pool.end();
   process.exit(0);
 });
+=======
+server.listen(PORT, () => {
+  console.log(`Server running at http://localhost:${PORT}/`);
+});
+>>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
