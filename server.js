@@ -1,12 +1,8 @@
-<<<<<<< HEAD
 // server.js
-=======
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const WebSocket = require('ws');
-<<<<<<< HEAD
 const { Pool } = require('pg');
 
 // Настройка подключения к PostgreSQL для Render
@@ -19,70 +15,7 @@ const pool = new Pool({
   connectionTimeoutMillis: 2000,
 });
 
-// server.js - добавьте эту функцию
-async function initializeDatabase() {
-  try {
-    const client = await pool.connect();
-    
-    // Создаем таблицы если они не существуют
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username VARCHAR(50) UNIQUE NOT NULL,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS messages (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
-        message_type VARCHAR(20) NOT NULL,
-        content TEXT NOT NULL,
-        target_user_id INTEGER REFERENCES users(id),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `);
-
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS user_sessions (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER REFERENCES users(id),
-        session_id VARCHAR(100) UNIQUE NOT NULL,
-        connected_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        disconnected_at TIMESTAMP NULL
-      )
-    `);
-
-    // Создаем индексы
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_messages_created_at ON messages(created_at)
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_messages_user_id ON messages(user_id)
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_user_sessions_session_id ON user_sessions(session_id)
-    `);
-    await client.query(`
-      CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)
-    `);
-
-    console.log('Database tables created successfully');
-    client.release();
-  } catch (error) {
-    console.error('Error creating database tables:', error);
-  }
-}
-=======
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
-
-const PUBLIC_DIR = path.join(__dirname, 'public');
-const PORT = process.env.PORT || 3000;
-
-<<<<<<< HEAD
-// Функции для работы с базой данных (остаются те же)
+// Функции для работы с базой данных
 const db = {
   async findOrCreateUser(username) {
     const client = await pool.connect();
@@ -281,15 +214,19 @@ async function initializeDatabase() {
   }
 }
 
-// Static file server (остается тот же)
-=======
-// Simple static file server
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
+// Static file server
+const PUBLIC_DIR = path.join(__dirname);
+const PORT = process.env.PORT || 3000;
+
 const server = http.createServer((req, res) => {
   let filePath = req.url;
   if (filePath === '/') filePath = '/index.html';
-  const fullPath = path.join(PUBLIC_DIR, decodeURI(filePath));
+  
+  // Безопасное определение пути к файлу
+  const safePath = path.normalize(filePath).replace(/^(\.\.[\/\\])+/, '');
+  const fullPath = path.join(__dirname, safePath);
 
+  // Проверяем существование файла
   fs.stat(fullPath, (err, stats) => {
     if (err || !stats.isFile()) {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -298,22 +235,22 @@ const server = http.createServer((req, res) => {
     }
 
     const ext = path.extname(fullPath).toLowerCase();
-    const map = {
+    const contentType = {
       '.html': 'text/html; charset=utf-8',
       '.css': 'text/css; charset=utf-8',
       '.js': 'application/javascript; charset=utf-8',
       '.png': 'image/png',
       '.jpg': 'image/jpeg',
-      '.svg': 'image/svg+xml'
-    };
+      '.svg': 'image/svg+xml',
+      '.json': 'application/json'
+    }[ext] || 'application/octet-stream';
 
-    res.writeHead(200, { 'Content-Type': map[ext] || 'application/octet-stream' });
+    res.writeHead(200, { 'Content-Type': contentType });
     fs.createReadStream(fullPath).pipe(res);
   });
 });
 
 const wss = new WebSocket.Server({ noServer: true });
-<<<<<<< HEAD
 const clients = new Map();
 
 function broadcast(data, except = null) {
@@ -321,21 +258,10 @@ function broadcast(data, except = null) {
   wss.clients.forEach((client) => {
     if (client.readyState === WebSocket.OPEN && client !== except) {
       client.send(raw);
-=======
-
-let clientId = 1;
-
-function broadcast(data, except) {
-  const raw = JSON.stringify(data);
-  wss.clients.forEach((c) => {
-    if (c.readyState === WebSocket.OPEN && c !== except) {
-      c.send(raw);
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
     }
   });
 }
 
-<<<<<<< HEAD
 async function updateOnlineUsers() {
   try {
     const onlineUsers = await db.getOnlineUsers();
@@ -374,9 +300,7 @@ wss.on('connection', async (ws) => {
 
     broadcast({ 
       type: 'system', 
-      text: `${currentUser.username} вошёл в чат`,
-      userId: currentUser.id,
-      userName: currentUser.username
+      text: `${currentUser.username} вошёл в чат`
     }, ws);
 
     await updateOnlineUsers();
@@ -387,52 +311,159 @@ wss.on('connection', async (ws) => {
     return;
   }
 
-  // Остальная логика обработки сообщений остается той же...
-  // [Вставьте сюда обработчики сообщений из предыдущей версии]
-=======
-wss.on('connection', (ws) => {
-  ws.id = clientId++;
-  ws.name = `User${ws.id}`;
-
-  // Inform the connected client about its assigned id and name
-  ws.send(JSON.stringify({ type: 'init', id: ws.id, name: ws.name }));
-
-  // Inform others
-  broadcast({ type: 'system', text: `${ws.name} вошёл в чат` }, ws);
-
-  ws.on('message', (msg) => {
-    let data;
+  ws.on('message', async (data) => {
     try {
-      data = JSON.parse(msg.toString());
-    } catch (e) {
-      return;
-    }
-
-    if (data.type === 'setName') {
-      const old = ws.name;
-      ws.name = String(data.name || '').trim() || ws.name;
-      broadcast({ type: 'system', text: `${old} сменил имя на ${ws.name}` });
-      return;
-    }
-
-    if (data.type === 'message') {
-      const text = String(data.text || '').trim();
-      if (!text) return;
-      const payload = {
-        type: 'message',
-        id: ws.id,
-        name: ws.name,
-        text,
-        ts: Date.now()
-      };
-      broadcast(payload);
+      const message = JSON.parse(data.toString());
+      
+      switch (message.type) {
+        case 'message':
+          if (message.text && message.text.trim()) {
+            const savedMessage = await db.saveMessage(
+              currentUser.id, 
+              'message', 
+              message.text.trim()
+            );
+            
+            broadcast({
+              type: 'message',
+              id: currentUser.id,
+              name: currentUser.username,
+              text: message.text.trim(),
+              ts: savedMessage.created_at
+            });
+          }
+          break;
+          
+        case 'setName':
+          if (message.name && message.name.trim()) {
+            const newName = message.name.trim();
+            try {
+              // Обновляем имя пользователя
+              const client = await pool.connect();
+              await client.query(
+                'UPDATE users SET username = $1 WHERE id = $2',
+                [newName, currentUser.id]
+              );
+              client.release();
+              
+              const oldName = currentUser.username;
+              currentUser.username = newName;
+              
+              await db.saveMessage(
+                currentUser.id, 
+                'action', 
+                `${oldName} сменил имя на ${newName}`
+              );
+              
+              broadcast({
+                type: 'action',
+                name: oldName,
+                text: `сменил имя на ${newName}`
+              });
+              
+              await updateOnlineUsers();
+              
+            } catch (error) {
+              console.error('Error updating username:', error);
+              ws.send(JSON.stringify({ 
+                type: 'system', 
+                text: 'Ошибка при смене имени. Возможно, такое имя уже занято.' 
+              }));
+            }
+          }
+          break;
+          
+        case 'action':
+          if (message.text && message.text.trim()) {
+            await db.saveMessage(
+              currentUser.id, 
+              'action', 
+              message.text.trim()
+            );
+            
+            broadcast({
+              type: 'action',
+              name: currentUser.username,
+              text: message.text.trim()
+            });
+          }
+          break;
+          
+        case 'reaction':
+          if (message.emoji) {
+            await db.saveMessage(
+              currentUser.id, 
+              'reaction', 
+              message.emoji
+            );
+            
+            broadcast({
+              type: 'reaction',
+              name: currentUser.username,
+              emoji: message.emoji
+            });
+          }
+          break;
+          
+        case 'private':
+          if (message.to && message.text && message.text.trim()) {
+            const targetUser = await db.getUserById(message.to);
+            if (targetUser) {
+              await db.saveMessage(
+                currentUser.id, 
+                'private', 
+                message.text.trim(),
+                message.to
+              );
+              
+              // Отправляем приватное сообщение конкретному пользователю
+              wss.clients.forEach((client) => {
+                const clientData = clients.get(client);
+                if (clientData && clientData.user.id === message.to) {
+                  client.send(JSON.stringify({
+                    type: 'private',
+                    name: currentUser.username,
+                    text: message.text.trim()
+                  }));
+                }
+              });
+              
+              ws.send(JSON.stringify({
+                type: 'private_sent'
+              }));
+            }
+          }
+          break;
+      }
+    } catch (error) {
+      console.error('Error processing message:', error);
     }
   });
 
-  ws.on('close', () => {
-    broadcast({ type: 'system', text: `${ws.name} покинул чат` });
+  ws.on('close', async () => {
+    const clientData = clients.get(ws);
+    if (clientData) {
+      await db.endUserSession(clientData.sessionId);
+      clients.delete(ws);
+      
+      await db.saveMessage(
+        clientData.user.id, 
+        'system', 
+        `${clientData.user.username} вышел из чата`
+      );
+      
+      broadcast({ 
+        type: 'system', 
+        text: `${clientData.user.username} вышел из чата` 
+      });
+      
+      await updateOnlineUsers();
+    }
   });
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
+
+  ws.on('error', (error) => {
+    console.error('WebSocket error:', error);
+  });
 });
 
 server.on('upgrade', (req, socket, head) => {
@@ -441,7 +472,6 @@ server.on('upgrade', (req, socket, head) => {
   });
 });
 
-<<<<<<< HEAD
 // Очистка старых сессий
 async function cleanupOldSessions() {
   try {
@@ -460,7 +490,7 @@ async function cleanupOldSessions() {
 
 // Запуск сервера
 server.listen(PORT, async () => {
-  await initializeDatabase(); // Добавьте эту строку
+  await initializeDatabase();
   await cleanupOldSessions();
   console.log(`Server running on port ${PORT}`);
 });
@@ -473,11 +503,6 @@ process.on('SIGTERM', async () => {
     await db.endUserSession(clientData.sessionId);
   }
   
-  await pool.end();
+  await pool.end();''
   process.exit(0);
 });
-=======
-server.listen(PORT, () => {
-  console.log(`Server running at http://localhost:${PORT}/`);
-});
->>>>>>> 65a3c9efa3e752f835231d667373d22f778cce6d
