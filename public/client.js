@@ -258,7 +258,7 @@
 
   // WebSocket соединение
   function connectWebSocket() {
-    const wsUrl = getWebSocketUrl;
+    const wsUrl = getWebSocketUrl();
 
     try {
       ws = new WebSocket(wsUrl);
