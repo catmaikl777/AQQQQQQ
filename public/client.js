@@ -13,6 +13,7 @@
   const onlineCount = document.getElementById("onlineCount");
   const fileInput = document.getElementById("fileInput");
   const fileUploadBtn = document.getElementById("fileUploadBtn");
+  const voiceMessageBtn = document.getElementById("voiceMessageBtn");
   const startCallBtn = document.getElementById("startCall");
   const endCallBtn = document.getElementById("endCall");
   const videoCallContainer = document.getElementById("videoCallContainer");
@@ -24,12 +25,16 @@
   const callerNameEl = document.getElementById("callerName");
   const acceptCallBtn = document.getElementById("acceptCall");
   const rejectCallBtn = document.getElementById("rejectCall");
-  const initialNameInput = document.getElementById("initialNameInput");
-  const confirmNameBtn = document.getElementById("confirmName");
-  const nameModal = document.getElementById("nameModal");
   const callStatusEl = document.getElementById("callStatus");
   const participantsCountEl = document.getElementById("participantsCount");
   const joinCallBtn = document.getElementById("joinCall");
+  const voiceRecordModal = document.getElementById("voiceRecordModal");
+  const voiceRecordVisualization = document.getElementById(
+    "voiceRecordVisualization"
+  );
+  const voiceRecordTimer = document.getElementById("voiceRecordTimer");
+  const stopRecordBtn = document.getElementById("stopRecordBtn");
+  const cancelRecordBtn = document.getElementById("cancelRecordBtn");
 
   // Глобальные переменные
   let myId = null;
@@ -40,6 +45,8 @@
   let isConnected = false;
   let activeCalls = [];
   let activeCallsModal = null;
+  let notificationPermission = false;
+  let serviceWorkerRegistration = null;
 
   let reconnectAttempts = 0;
   const maxReconnectAttempts = 5;
@@ -54,6 +61,17 @@
   let isCallInitiator = false;
   let participantsCount = 1;
   let roomUsers = new Map();
+
+  // Переменные для голосовых сообщений
+  let mediaRecorder = null;
+  let audioChunks = [];
+  let isRecording = false;
+  let recordingTimer = null;
+  let recordingStartTime = 0;
+  let audioContext = null;
+  let analyser = null;
+  let visualizationBars = [];
+  let visualizationInterval = null;
 
   // WebRTC конфигурация (улучшенная)
   const rtcConfig = {
@@ -79,39 +97,23 @@
       },
     ],
     iceCandidatePoolSize: 10,
+    iceTransportPolicy: "all",
     bundlePolicy: "max-bundle",
     rtcpMuxPolicy: "require",
+    iceServersProtocols: ["tcp", "udp"],
   };
 
   // Инициализация приложения
   function init() {
     setupEventListeners();
     initializeEmojiPanel();
+    initializeVoiceRecording();
+    initializeNotifications();
     connectWebSocket();
   }
 
-  // function checkUserName() {
-  //   const savedName = localStorage.getItem("chatUserName");
-  //   if (savedName) {
-  //     hideNameModal();
-  //   } else {
-  //     showNameModal();
-  //   }
-  // }
-
-  // function showNameModal() {
-  //   nameModal.classList.remove("hidden");
-  //   initialNameInput.focus();
-  // }
-
-  // function hideNameModal() {
-  //   nameModal.classList.add("hidden");
-  // }
-
   // Настройка обработчиков событий
   function setupEventListeners() {
-    // Модальное окно имени
-
     // Сайдбар
     sidebarToggle.addEventListener("click", toggleSidebar);
     closeSidebar.addEventListener("click", toggleSidebar);
@@ -140,6 +142,9 @@
     fileUploadBtn.addEventListener("click", () => fileInput.click());
     fileInput.addEventListener("change", handleFileUpload);
 
+    // Голосовые сообщения
+    voiceMessageBtn.addEventListener("click", startVoiceRecording);
+
     // Звонки
     startCallBtn.addEventListener("click", startGroupCall);
     endCallBtn.addEventListener("click", endCall);
@@ -150,6 +155,10 @@
     // Входящие звонки
     acceptCallBtn.addEventListener("click", acceptCall);
     rejectCallBtn.addEventListener("click", rejectCall);
+
+    // Запись голоса
+    stopRecordBtn.addEventListener("click", stopVoiceRecording);
+    cancelRecordBtn.addEventListener("click", cancelVoiceRecording);
 
     // Адаптивность
     window.addEventListener("resize", handleResize);
@@ -176,6 +185,10 @@
       "👎",
       "😎",
       "🤯",
+      "🎂",
+      "🚀",
+      "⭐",
+      "💯",
     ];
 
     emojiPanel.innerHTML = "";
@@ -188,6 +201,18 @@
       });
       emojiPanel.appendChild(button);
     });
+  }
+
+  function initializeVoiceRecording() {
+    // Создаем визуализационные бары
+    voiceRecordVisualization.innerHTML = "";
+    for (let i = 0; i < 40; i++) {
+      const bar = document.createElement("div");
+      bar.className = "voice-record-bar";
+      bar.style.height = "2px";
+      voiceRecordVisualization.appendChild(bar);
+      visualizationBars.push(bar);
+    }
   }
 
   function setVH() {
@@ -210,55 +235,457 @@
     }
   }
 
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.addEventListener("message", (event) => {
+      const { action, data } = event.data;
+
+      switch (action) {
+        case "notification-click":
+          handleNotificationClick(data);
+          break;
+        case "notification-action":
+          handleNotificationAction(data);
+          break;
+      }
+    });
+  }
+
+  function handleNotificationClick(data) {
+    // Фокусируем окно при клике на уведомление
+    window.focus();
+
+    // Прокручиваем к последним сообщениям
+    scrollToBottom();
+  }
+
+  function handleNotificationAction(data) {
+    const { action, notification } = data;
+
+    switch (action) {
+      case "open":
+        window.focus();
+        scrollToBottom();
+        break;
+      case "accept-call":
+        if (incomingCall) {
+          acceptCall();
+        }
+        break;
+      case "reject-call":
+        if (incomingCall) {
+          rejectCall();
+        }
+        break;
+      case "join-call":
+        // Логика присоединения к групповому звонку
+        if (activeCalls.length > 0) {
+          joinGroupCall(activeCalls[0].roomId);
+        }
+        break;
+    }
+
+    // Закрываем уведомление
+    notification.close();
+  }
+
   function handleVisibilityChange() {
-    if (document.hidden && incomingCall) {
-      showBrowserNotification(
-        "Входящий звонок",
-        `${incomingCall.fromUserName} звонит вам`
-      );
+    if (document.hidden) {
+      // Страница скрыта - можно показывать уведомления
+      if (incomingCall) {
+        notifyIncomingCall(incomingCall);
+      }
+    } else {
+      // Страница активна - очищаем уведомления
+      if (serviceWorkerRegistration) {
+        serviceWorkerRegistration.getNotifications().then(notifications => {
+          notifications.forEach(notification => notification.close());
+        });
+      }
     }
   }
 
-  function updateVideoGridLayout() {
-    const videoGrid = document.querySelector(".video-grid");
-    if (!videoGrid) return;
+  // Функции для голосовых сообщений
+  async function startVoiceRecording() {
+    try {
+      // Запрашиваем доступ к микрофону
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+          sampleRate: 44100,
+          channelCount: 1,
+        },
+      });
 
-    const videoContainers = videoGrid.querySelectorAll(".video-container");
-    const containerCount = videoContainers.length;
+      // Инициализируем AudioContext для визуализации
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      analyser = audioContext.createAnalyser();
+      const source = audioContext.createMediaStreamSource(stream);
+      source.connect(analyser);
 
-    // Удаляем все классы компоновки
-    videoGrid.className = "video-grid";
-    videoContainers.forEach((container) => {
-      container.className = "video-container";
+      analyser.fftSize = 256;
+      const bufferLength = analyser.frequencyBinCount;
+      const dataArray = new Uint8Array(bufferLength);
+
+      // Настраиваем MediaRecorder
+      mediaRecorder = new MediaRecorder(stream, {
+        mimeType: "audio/webm;codecs=opus",
+      });
+
+      audioChunks = [];
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunks.push(event.data);
+        }
+      };
+
+      mediaRecorder.onstop = handleRecordingStop;
+
+      // Запускаем запись
+      mediaRecorder.start(100);
+      isRecording = true;
+      recordingStartTime = Date.now();
+
+      // Обновляем UI
+      voiceMessageBtn.classList.add("recording");
+      voiceRecordModal.classList.remove("hidden");
+
+      // Запускаем таймер
+      startRecordingTimer();
+
+      // Запускаем визуализацию
+      startVisualization(dataArray, bufferLength);
+    } catch (error) {
+      console.error("Error starting voice recording:", error);
+      showSystemMessage("❌ Не удалось получить доступ к микрофону");
+    }
+  }
+
+  function startVisualization(dataArray, bufferLength) {
+    visualizationInterval = setInterval(() => {
+      if (!isRecording) return;
+
+      analyser.getByteFrequencyData(dataArray);
+
+      // Обновляем бары визуализации
+      const barCount = visualizationBars.length;
+      const step = Math.floor(bufferLength / barCount);
+
+      visualizationBars.forEach((bar, index) => {
+        const value = dataArray[index * step] || 0;
+        const height = Math.max(2, (value / 255) * 80);
+        bar.style.height = `${height}px`;
+        bar.style.background = `hsl(${200 + (value / 255) * 60}, 100%, 50%)`;
+      });
+    }, 50);
+  }
+
+  function startRecordingTimer() {
+    recordingTimer = setInterval(() => {
+      if (!isRecording) return;
+
+      const elapsed = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const minutes = Math.floor(elapsed / 60)
+        .toString()
+        .padStart(2, "0");
+      const seconds = (elapsed % 60).toString().padStart(2, "0");
+
+      voiceRecordTimer.textContent = `${minutes}:${seconds}`;
+
+      // Автоматическая остановка через 2 минуты
+      if (elapsed >= 120) {
+        stopVoiceRecording();
+      }
+    }, 1000);
+  }
+
+  function stopVoiceRecording() {
+    if (!isRecording || !mediaRecorder) return;
+
+    mediaRecorder.stop();
+    isRecording = false;
+
+    // Останавливаем все потоки
+    mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+
+    // Очищаем интервалы
+    clearInterval(recordingTimer);
+    clearInterval(visualizationInterval);
+
+    // Сбрасываем визуализацию
+    visualizationBars.forEach((bar) => {
+      bar.style.height = "2px";
+      bar.style.background = "var(--primary-red)";
     });
 
-    // Динамически настраиваем сетку в зависимости от количества участников
-    if (containerCount <= 2) {
-      videoGrid.style.gridTemplateColumns = "1fr 1fr";
-    } else if (containerCount <= 4) {
-      videoGrid.style.gridTemplateColumns = "1fr 1fr";
-      videoGrid.style.gridTemplateRows = "1fr 1fr";
-    } else {
-      videoGrid.style.gridTemplateColumns =
-        "repeat(auto-fit, minmax(300px, 1fr))";
+    // Закрываем AudioContext
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
     }
 
-    console.log(`🎬 Video grid updated: ${containerCount} participants`);
+    // Скрываем модальное окно
+    voiceRecordModal.classList.add("hidden");
+    voiceMessageBtn.classList.remove("recording");
+  }
+
+  function cancelVoiceRecording() {
+    if (!isRecording) return;
+
+    mediaRecorder.stop();
+    isRecording = false;
+
+    // Останавливаем все потоки
+    mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+
+    // Очищаем интервалы
+    clearInterval(recordingTimer);
+    clearInterval(visualizationInterval);
+
+    // Сбрасываем визуализацию
+    visualizationBars.forEach((bar) => {
+      bar.style.height = "2px";
+      bar.style.background = "var(--primary-red)";
+    });
+
+    // Закрываем AudioContext
+    if (audioContext) {
+      audioContext.close();
+      audioContext = null;
+    }
+
+    // Сбрасываем данные
+    audioChunks = [];
+
+    // Скрываем модальное окно
+    voiceRecordModal.classList.add("hidden");
+    voiceMessageBtn.classList.remove("recording");
+
+    showSystemMessage("❌ Запись отменена");
+  }
+
+  async function handleRecordingStop() {
+    try {
+      if (audioChunks.length === 0) {
+        showSystemMessage("❌ Запись слишком короткая");
+        return;
+      }
+
+      const audioBlob = new Blob(audioChunks, {
+        type: "audio/webm;codecs=opus",
+      });
+      const duration = Math.floor((Date.now() - recordingStartTime) / 1000);
+
+      if (duration < 1) {
+        showSystemMessage("❌ Запись слишком короткая");
+        return;
+      }
+
+      if (duration > 120) {
+        showSystemMessage("❌ Запись слишком длинная (максимум 2 минуты)");
+        return;
+      }
+
+      showSystemMessage("🔄 Отправка голосового сообщения...");
+
+      // Конвертируем в base64
+      const reader = new FileReader();
+      reader.onload = () => {
+        const base64 = reader.result.split(",")[1];
+
+        sendMessage({
+          type: "file",
+          filename: `voice_message_${Date.now()}.webm`,
+          filetype: "audio/webm",
+          size: audioBlob.size,
+          data: base64,
+          duration: duration,
+        });
+
+        showSystemMessage("✅ Голосовое сообщение отправлено");
+      };
+
+      reader.readAsDataURL(audioBlob);
+    } catch (error) {
+      console.error("Error processing recording:", error);
+      showSystemMessage("❌ Ошибка обработки записи");
+    } finally {
+      audioChunks = [];
+    }
+  }
+
+  function showVoiceMessage(data, isHistory = false) {
+    const el = document.createElement("div");
+    el.className = `message voice-message ${data.id === myId ? "me" : ""}`;
+
+    const time = data.ts
+      ? new Date(data.ts).toLocaleTimeString("ru-RU", {
+          hour: "2-digit",
+          minute: "2-digit",
+        })
+      : new Date().toLocaleTimeString("ru-RU", {
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
+    el.innerHTML = `
+      <div class="message-header">
+        <strong>${escapeHtml(data.name)}</strong>
+        <span class="message-time">${time}</span>
+      </div>
+      <div class="voice-player">
+        <div class="voice-controls">
+          <button class="play-pause-btn" data-audio="${
+            data.data
+          }" data-duration="${data.duration || 0}">▶️</button>
+          <div class="voice-visualization" id="visualization_${data.ts}">
+            <!-- Визуализация будет создана динамически -->
+          </div>
+          <div class="voice-duration">${formatDuration(
+            data.duration || 0
+          )}</div>
+        </div>
+        <div class="voice-progress">
+          <div class="voice-progress-bar" style="width: 0%"></div>
+        </div>
+      </div>
+    `;
+
+    // Инициализируем визуализацию для этого сообщения
+    initializeVoiceVisualization(el, data.duration || 0);
+
+    addMessage(el, isHistory);
+
+    // Добавляем обработчик для кнопки воспроизведения
+    const playBtn = el.querySelector(".play-pause-btn");
+    playBtn.addEventListener("click", handleVoicePlayback);
+  }
+
+  function initializeVoiceVisualization(element, duration) {
+    const visualization = element.querySelector(".voice-visualization");
+    visualization.innerHTML = "";
+
+    const barCount = Math.min(40, Math.floor(duration * 2));
+    for (let i = 0; i < barCount; i++) {
+      const bar = document.createElement("div");
+      bar.className = "voice-bar";
+      bar.style.height = "2px";
+      bar.style.background = "var(--bg-secondary)";
+      visualization.appendChild(bar);
+    }
+  }
+
+  function handleVoicePlayback(event) {
+    const button = event.target;
+    const audioData = button.getAttribute("data-audio");
+    const duration = parseInt(button.getAttribute("data-duration"));
+
+    if (!audioData) return;
+
+    const audio = new Audio(`data:audio/webm;base64,${audioData}`);
+    const visualization = button.parentElement.querySelector(
+      ".voice-visualization"
+    );
+    const progressBar = button.parentElement.parentElement.querySelector(
+      ".voice-progress-bar"
+    );
+    const bars = visualization.querySelectorAll(".voice-bar");
+
+    // Останавливаем все другие воспроизведения
+    document.querySelectorAll(".play-pause-btn").forEach((btn) => {
+      if (btn !== button) {
+        btn.textContent = "▶️";
+        const otherAudio = btn.getAttribute("data-audio-instance");
+        if (otherAudio) {
+          otherAudio.pause();
+          btn.removeAttribute("data-audio-instance");
+        }
+      }
+    });
+
+    if (button.getAttribute("data-audio-instance")) {
+      // Останавливаем воспроизведение
+      audio.pause();
+      button.textContent = "▶️";
+      button.removeAttribute("data-audio-instance");
+      resetVisualization(bars, progressBar);
+    } else {
+      // Начинаем воспроизведение
+      button.textContent = "⏸️";
+      button.setAttribute("data-audio-instance", audio);
+
+      audio.addEventListener("loadedmetadata", () => {
+        startPlaybackVisualization(audio, bars, progressBar, duration);
+      });
+
+      audio.addEventListener("ended", () => {
+        button.textContent = "▶️";
+        button.removeAttribute("data-audio-instance");
+        resetVisualization(bars, progressBar);
+      });
+
+      audio.play().catch((error) => {
+        console.error("Error playing audio:", error);
+        button.textContent = "▶️";
+        button.removeAttribute("data-audio-instance");
+      });
+    }
+  }
+
+  function startPlaybackVisualization(audio, bars, progressBar, duration) {
+    const updateVisualization = () => {
+      if (audio.paused || audio.ended) return;
+
+      const currentTime = audio.currentTime;
+      const progress = (currentTime / duration) * 100;
+      progressBar.style.width = `${progress}%`;
+
+      // Анимируем бары визуализации
+      bars.forEach((bar, index) => {
+        const barProgress = (index / bars.length) * 100;
+        if (barProgress <= progress) {
+          const intensity = Math.random() * 0.7 + 0.3;
+          const height = Math.max(2, 20 * intensity);
+          bar.style.height = `${height}px`;
+          bar.style.background = `hsl(${200 + intensity * 60}, 100%, 50%)`;
+        } else {
+          bar.style.height = "2px";
+          bar.style.background = "var(--bg-secondary)";
+        }
+      });
+
+      requestAnimationFrame(updateVisualization);
+    };
+
+    updateVisualization();
+  }
+
+  function resetVisualization(bars, progressBar) {
+    progressBar.style.width = "0%";
+    bars.forEach((bar) => {
+      bar.style.height = "2px";
+      bar.style.background = "var(--bg-secondary)";
+    });
+  }
+
+  function formatDuration(seconds) {
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${minutes}:${secs.toString().padStart(2, "0")}`;
   }
 
   function getWebSocketUrl() {
-    // Для продакшена - ваш backend сервер
-    if (window.location.hostname.includes('vercel.app')) {
-      return "wss://aqqqqqq-2.onrender.com"; // Замените на ваш сервер
+    if (window.location.hostname.includes("vercel.app")) {
+      return "wss://aqqqqqq-2.onrender.com";
     }
-    // Для локальной разработки
     return "ws://localhost:3000";
   }
 
-
   // WebSocket соединение
   function connectWebSocket() {
-    const wsUrl = getWebSocketUrl;
+    const wsUrl = getWebSocketUrl();
 
     try {
       ws = new WebSocket(wsUrl);
@@ -291,12 +718,10 @@
       showSystemMessage("❌ Ошибка соединения с сервером");
     };
 
-    // В функции setupWebSocketHandlers() добавьте:
     ws.onclose = (event) => {
       console.log("❌ Disconnected from server:", event.code, event.reason);
       isConnected = false;
 
-      // ИСПРАВЛЕНИЕ: Не пытаемся переподключаться при закрытии дублирующей сессии
       if (
         event.code === 4000 &&
         event.reason === "Duplicate session closed by new connection"
@@ -367,7 +792,11 @@
         showReactionMessage(message);
         break;
       case "file":
-        showFileMessage(message);
+        if (message.filetype && message.filetype.startsWith("audio/")) {
+          showVoiceMessage(message);
+        } else {
+          showFileMessage(message);
+        }
         break;
       case "users":
         updateUsersList(message.users);
@@ -381,10 +810,26 @@
       case "private_sent":
         showSystemMessage("✅ Личное сообщение отправлено");
         break;
+      case "message":
+        notifyNewMessage(message);
+        break;
+      case "private":
+        showNotification(`🔒 Личное сообщение от ${message.name}`, {
+          body: message.text,
+          tag: "private-message",
+          requireInteraction: true,
+        });
+        break;
+      case "system":
+        if (message.text.includes("вошёл") || message.text.includes("вышел")) {
+          notifySystemEvent("👤 Изменение участников", message.text);
+        }
+        break;
 
-      // WebRTC сообщения - ИСПРАВЛЕННЫЕ
+      // WebRTC сообщения
       case "call_invite":
         handleCallInvite(message);
+        notifyIncomingCall(message);
         break;
       case "call_started":
         handleCallStarted(message);
@@ -418,6 +863,16 @@
         break;
       case "group_call_started":
         handleGroupCallStarted(message);
+        showNotification(`👥 ${message.fromUserName} начал групповой звонок`, {
+          body: "Нажмите чтобы присоединиться",
+          tag: "group-call-started",
+          actions: [
+            {
+              action: "join-call",
+              title: "👥 Присоединиться",
+            },
+          ],
+        });
         break;
       case "group_call_ended":
         handleGroupCallEnded(message);
@@ -432,35 +887,30 @@
   }
 
   function handleInitMessage(message) {
-  myId = message.id;
-  mySessionId = message.sessionId;
+    myId = message.id;
+    mySessionId = message.sessionId;
 
-  // Автоматически генерируем имя пользователя
-  const randomNumber = Math.floor(Math.random() * 10000);
-  const autoName = `User${randomNumber}`;
-  
-  // Сохраняем в localStorage
-  localStorage.setItem("chatUserName", autoName);
-  
-  // Устанавливаем в поле ввода
-  if (nameInput) {
-    nameInput.value = autoName;
-  }
+    // Автоматически генерируем имя пользователя
+    const randomNumber = Math.floor(Math.random() * 10000);
+    const autoName = `User${randomNumber}`;
 
-  // Отправляем имя на сервер
-  setTimeout(() => {
-    if (isConnected) {
-      sendMessage({ type: "setName", name: autoName });
+    // Сохраняем в localStorage
+    localStorage.setItem("chatUserName", autoName);
+
+    // Устанавливаем в поле ввода
+    if (nameInput) {
+      nameInput.value = autoName;
     }
-  }, 500);
 
-  // Скрываем модальное окно имени (на всякий случай)
-  if (nameModal) {
-    nameModal.classList.add("hidden");
+    // Отправляем имя на сервер
+    setTimeout(() => {
+      if (isConnected) {
+        sendMessage({ type: "setName", name: autoName });
+      }
+    }, 500);
+
+    console.log(`✅ Auto-generated name: ${autoName}`);
   }
-
-  console.log(`✅ Auto-generated name: ${autoName}`);
-}
 
   function handleHistoryMessage(message) {
     if (!historyLoaded && message.history) {
@@ -476,7 +926,11 @@
             showActionMessage(msg, true);
             break;
           case "file":
-            showFileMessage(msg, true);
+            if (msg.filetype && msg.filetype.startsWith("audio/")) {
+              showVoiceMessage(msg, true);
+            } else {
+              showFileMessage(msg, true);
+            }
             break;
         }
       });
@@ -497,20 +951,6 @@
       showSystemMessage("❌ Нет подключения к серверу");
     }
   }
-
-  // function handleInitialName() {
-  //   const name = initialNameInput.value.trim();
-  //   if (name) {
-  //     localStorage.setItem("chatUserName", name);
-  //     hideNameModal();
-  //     if (isConnected && myId) {
-  //       // Ждем инициализации перед отправкой имени
-  //       setTimeout(() => {
-  //         sendMessage({ type: "setName", name });
-  //       }, 1000);
-  //     }
-  //   }
-  // }
 
   function handleMessageSubmit(e) {
     e.preventDefault();
@@ -533,9 +973,6 @@
     if (message.userId === myId) {
       localStorage.setItem("chatUserName", message.newName);
       showSystemMessage(`✅ Теперь вас зовут ${message.newName}`);
-    } else {
-      // Если это не наш ID, но мы получили сообщение - возможно, имя не изменилось
-      console.log("Name update message for other user:", message);
     }
   }
 
@@ -650,6 +1087,108 @@
     }
   }
 
+  async function initializeNotifications() {
+    try {
+      // Запрашиваем разрешение на уведомления
+      if ("Notification" in window) {
+        const permission = await Notification.requestPermission();
+        notificationPermission = permission === "granted";
+
+        if (notificationPermission) {
+          console.log("✅ Уведомления разрешены");
+        } else {
+          console.log("❌ Уведомления не разрешены");
+        }
+      }
+
+      // Регистрируем сервис-воркер
+      if ("serviceWorker" in navigator) {
+        try {
+          const registration = await navigator.serviceWorker.register("/sw.js");
+          serviceWorkerRegistration = registration;
+          console.log("✅ Service Worker зарегистрирован");
+        } catch (error) {
+          console.warn("⚠️ Service Worker не зарегистрирован:", error);
+        }
+      }
+    } catch (error) {
+      console.error("❌ Ошибка инициализации уведомлений:", error);
+    }
+  }
+
+  // Функция показа уведомления
+  function showNotification(title, options = {}) {
+    if (!notificationPermission) return;
+
+    // Проверяем видимость страницы
+    if (document.hidden) {
+      if ("serviceWorker" in navigator && serviceWorkerRegistration) {
+        // Используем сервис-воркер для показа уведомления
+        serviceWorkerRegistration.showNotification(title, {
+          icon: "/favicon.ico",
+          badge: "/favicon.ico",
+          vibrate: [200, 100, 200],
+          ...options,
+        });
+      } else if ("Notification" in window) {
+        // Используем стандартные уведомления
+        new Notification(title, {
+          icon: "/favicon.ico",
+          ...options,
+        });
+      }
+    }
+  }
+
+  // Функция для отправки уведомления о новом сообщении
+  function notifyNewMessage(message) {
+    showNotification(`Новое сообщение от ${message.name}`, {
+      body: message.text || "📎 Вложение",
+      tag: "new-message",
+      requireInteraction: true,
+      actions: [
+        {
+          action: "open",
+          title: "📖 Открыть чат",
+        },
+        {
+          action: "close",
+          title: "❌ Закрыть",
+        },
+      ],
+    });
+  }
+
+  // Функция для уведомления о входящем звонке
+  function notifyIncomingCall(callInfo) {
+    showNotification(`Входящий звонок от ${callInfo.fromUserName}`, {
+      body: callInfo.isGroupCall
+        ? "👥 Групповой звонок"
+        : "📞 Индивидуальный звонок",
+      tag: "incoming-call",
+      requireInteraction: true,
+      vibrate: [500, 200, 500, 200, 500],
+      actions: [
+        {
+          action: "accept-call",
+          title: "📞 Принять",
+        },
+        {
+          action: "reject-call",
+          title: "❌ Отклонить",
+        },
+      ],
+    });
+  }
+
+  // Функция для уведомления о системных событиях
+  function notifySystemEvent(title, body) {
+    showNotification(title, {
+      body: body,
+      tag: "system-event",
+    });
+  }
+
   function escapeHtml(text) {
     const div = document.createElement("div");
     div.textContent = text;
@@ -736,7 +1275,6 @@
   }
 
   function showActiveCallsModal() {
-    // Создаем модальное окно, если его нет
     if (!activeCallsModal) {
       activeCallsModal = document.createElement("div");
       activeCallsModal.className = "modal";
@@ -754,7 +1292,6 @@
     `;
       document.body.appendChild(activeCallsModal);
 
-      // Обработчики событий для модального окна
       document
         .getElementById("refreshCalls")
         .addEventListener("click", refreshActiveCalls);
@@ -786,7 +1323,6 @@
       `🔄 Processing ${pc.pendingIceCandidates.length} pending ICE candidates for ${sessionId}`
     );
 
-    // Обрабатываем все отложенные кандидаты
     while (pc.pendingIceCandidates.length > 0) {
       const candidate = pc.pendingIceCandidates.shift();
       try {
@@ -808,7 +1344,6 @@
     showSystemMessage("🎥 Запрашиваем доступ к камере и микрофону...");
 
     try {
-      // ИСПРАВЛЕНИЕ: Инициализируем медиапоток перед присоединением
       await initializeLocalStream();
 
       currentRoomId = roomId;
@@ -824,7 +1359,6 @@
     }
   }
 
-  // ДОБАВИТЬ: Обработчик активных звонков
   function handleActiveCalls(message) {
     activeCalls = message.calls;
 
@@ -879,13 +1413,11 @@
     });
   }
 
-  // ДОБАВИТЬ: Обработчик уведомления о начале группового звонка
   function handleGroupCallStarted(message) {
-    if (isInCall) return; // Не показываем уведомления если уже в звонке
+    if (isInCall) return;
 
     showSystemMessage(`👥 ${message.fromUserName} начал групповой звонок`);
 
-    // Показываем кнопку для быстрого присоединения
     if (!document.querySelector(".quick-join-call")) {
       const quickJoin = document.createElement("div");
       quickJoin.className = "system quick-join-call";
@@ -908,7 +1440,6 @@
     }
   }
 
-  // ДОБАВИТЬ: Обработчик завершения группового звонка
   function handleGroupCallEnded(message) {
     showSystemMessage(
       `📞 Групповой звонок завершен ${
@@ -916,7 +1447,6 @@
       }`
     );
 
-    // Удаляем кнопки быстрого присоединения
     document.querySelectorAll(".quick-join-call").forEach((el) => el.remove());
   }
 
@@ -937,7 +1467,6 @@
 
     addMessage(el);
 
-    // Уведомление
     if (
       document.hidden &&
       "Notification" in window &&
@@ -978,7 +1507,7 @@
     fileInput.value = "";
   }
 
-  // WebRTC функции - ИСПРАВЛЕННЫЕ
+  // WebRTC функции
   async function startGroupCall() {
     if (isInCall) {
       showSystemMessage("❌ Вы уже в звонке");
@@ -988,7 +1517,10 @@
     try {
       showSystemMessage("🎥 Запрашиваем доступ к камере и микрофону...");
       await initializeLocalStream();
+
       isCallInitiator = true;
+      showVideoCallUI();
+
       sendMessage({ type: "create_room" });
       showSystemMessage("👥 Создаем групповой звонок...");
     } catch (error) {
@@ -996,6 +1528,9 @@
       showSystemMessage(
         "❌ Не удалось начать звонок. Проверьте разрешения для камеры/микрофона."
       );
+
+      isCallInitiator = false;
+      hideVideoCallUI();
     }
   }
 
@@ -1012,7 +1547,6 @@
 
   async function initializeLocalStream() {
     try {
-      // Останавливаем существующий поток если есть
       if (localStream) {
         localStream.getTracks().forEach((track) => track.stop());
       }
@@ -1039,7 +1573,6 @@
     } catch (error) {
       console.error("❌ Error accessing media devices:", error);
 
-      // Пробуем получить только аудио если видео недоступно
       try {
         localStream = await navigator.mediaDevices.getUserMedia({
           audio: true,
@@ -1062,7 +1595,6 @@
 
   function handleCallInvite(message) {
     if (isInCall) {
-      // Если уже в звонке, отклоняем входящий
       sendMessage({ type: "call_rejected", roomId: message.roomId });
       return;
     }
@@ -1073,7 +1605,6 @@
     })`;
     incomingCallModal.classList.remove("hidden");
 
-    // Автоматическое отклонение через 30 секунд
     setTimeout(() => {
       if (
         incomingCallModal &&
@@ -1085,18 +1616,42 @@
   }
 
   function handleCallStarted(message) {
+    console.log("📞 Call started received:", message);
+
     currentRoomId = message.roomId;
     isInCall = true;
+
+    if (!videoCallContainer.classList.contains("hidden")) {
+      console.log("✅ Video call UI already visible");
+    } else {
+      console.log("🔄 Showing video call UI for call starter");
+      showVideoCallUI();
+    }
+
     showSystemMessage(`📞 Звонок начат с ${message.targetUserName}`);
+    updateCallButtons();
   }
 
   function handleRoomCreated(message) {
     currentRoomId = message.roomId;
     isInCall = true;
+
     showVideoCallUI();
     showSystemMessage(message.message || "✅ Комната создана");
 
-    // Запрашиваем список пользователей в комнате
+    if (!localStream) {
+      initializeLocalStream()
+        .then(() => {
+          console.log("✅ Local stream initialized for room creator");
+        })
+        .catch((error) => {
+          console.error("❌ Failed to initialize local stream:", error);
+          showSystemMessage(
+            "⚠️ Звонок создан, но нет доступа к камере/микрофону"
+          );
+        });
+    }
+
     setTimeout(() => {
       updateRoomUsers();
     }, 1000);
@@ -1117,7 +1672,6 @@
       showVideoCallUI();
       showSystemMessage("✅ Вы присоединились к звонку");
 
-      // Запрашиваем список пользователей в комнате
       setTimeout(() => {
         updateRoomUsers();
       }, 1000);
@@ -1156,271 +1710,137 @@
           : "Звонок завершен"
       }`
     );
-    endCall();
+
+    if (isInCall && currentRoomId === message.roomId) {
+      endCall();
+    }
   }
 
-  // WebRTC соединения - ИСПРАВЛЕННЫЕ
-  async function createPeerConnection(targetSessionId) {
-    console.log(`🔗 Creating peer connection for: ${targetSessionId}`);
+  function setupConnectionStateHandlers(pc, targetSessionId) {
+    pc.onconnectionstatechange = () => {
+      console.log(
+        `🔗 Connection state for ${targetSessionId}: ${pc.connectionState}`
+      );
 
-    try {
-      const pc = new RTCPeerConnection(rtcConfig);
+      if (pc.connectionState === "connected") {
+        console.log(`✅ Successfully connected to ${targetSessionId}`);
+        updateCallStatus("connected");
+      } else if (pc.connectionState === "disconnected") {
+        console.warn(
+          `⚠️ Connection disconnected with ${targetSessionId}, attempting restore...`
+        );
+        updateCallStatus("disconnected");
 
-      // Инициализируем массив для отложенных ICE кандидатов
-      pc.pendingIceCandidates = [];
-
-      // Настраиваем обработчики состояния
-      setupConnectionStateHandlers(pc, targetSessionId);
-
-      // Обработчик получения удаленных потоков
-      pc.ontrack = (event) => {
-        console.log("📹 Received remote track from:", targetSessionId, event.streams);
-        if (event.streams && event.streams[0]) {
-          showRemoteVideo(targetSessionId, event.streams[0]);
-        }
-      };
-
-      // Обработчик ICE кандидатов
-      pc.onicecandidate = (event) => {
-        if (event.candidate && currentRoomId) {
-          console.log(`🧊 Sending ICE candidate to ${targetSessionId}`);
-          sendMessage({
-            type: "webrtc_ice_candidate",
-            roomId: currentRoomId,
-            targetSessionId: targetSessionId,
-            candidate: event.candidate,
-          });
-        } else if (!event.candidate) {
-          console.log(`✅ All ICE candidates gathered for ${targetSessionId}`);
-        }
-      };
-
-      // Добавляем локальные треки
-      if (localStream) {
-        localStream.getTracks().forEach((track) => {
-          try {
-            pc.addTrack(track, localStream);
-            console.log(`✅ Added local track to connection with ${targetSessionId}`);
-          } catch (error) {
-            console.error("Error adding track:", error);
+        setTimeout(() => {
+          if (currentRoomId && peerConnections.has(targetSessionId)) {
+            const checkPc = peerConnections.get(targetSessionId);
+            if (
+              checkPc.connectionState === "disconnected" ||
+              checkPc.connectionState === "failed"
+            ) {
+              console.log(`🔄 Restarting connection with ${targetSessionId}`);
+              restartConnection(targetSessionId);
+            }
           }
-        });
+        }, 3000);
+      } else if (pc.connectionState === "failed") {
+        console.error(`❌ Connection failed with ${targetSessionId}`);
+        updateCallStatus("failed");
+        restartConnection(targetSessionId);
       }
+    };
 
-      peerConnections.set(targetSessionId, pc);
-      return pc;
-    } catch (error) {
-      console.error(`❌ Error creating peer connection for ${targetSessionId}:`, error);
-      throw error;
-    }
-  }
+    pc.oniceconnectionstatechange = () => {
+      console.log(
+        `🧊 ICE connection state for ${targetSessionId}: ${pc.iceConnectionState}`
+      );
 
-  function showRemoteVideo(sessionId, remoteStream) {
-    const remoteVideoId = `remoteVideo_${sessionId}`;
-    let remoteVideo = document.getElementById(remoteVideoId);
-    let videoContainer = document.getElementById(`videoContainer_${sessionId}`);
-
-    if (!videoContainer) {
-      videoContainer = document.createElement("div");
-      videoContainer.className = "video-container";
-      videoContainer.id = `videoContainer_${sessionId}`;
-
-      remoteVideo = document.createElement("video");
-      remoteVideo.id = remoteVideoId;
-      remoteVideo.autoplay = true;
-      remoteVideo.playsInline = true;
-      remoteVideo.className = "remote-video";
-
-      // ИСПРАВЛЕНИЕ: Добавляем обработчики ошибок для видео
-      remoteVideo.onerror = (e) => {
-        console.error(`❌ Video error for ${sessionId}:`, e);
-      };
-
-      remoteVideo.onloadedmetadata = () => {
-        console.log(`✅ Video loaded for ${sessionId}`);
-      };
-
-      const videoLabel = document.createElement("div");
-      videoLabel.className = "video-label";
-
-      const userName = roomUsers.get(sessionId)?.userName || "Участник";
-      videoLabel.textContent = userName;
-
-      videoContainer.appendChild(remoteVideo);
-      videoContainer.appendChild(videoLabel);
-
-      const videoGrid = document.querySelector(".video-grid");
-      if (videoGrid) {
-        videoGrid.appendChild(videoContainer);
-      }
-    }
-
-    if (remoteVideo) {
-      try {
-        remoteVideo.srcObject = remoteStream;
-        console.log(`✅ Remote video set for ${sessionId}`);
-      } catch (error) {
-        console.error(`❌ Error setting remote video for ${sessionId}:`, error);
-      }
-    }
-
-    // Обновляем компоновку сетки
-    setTimeout(updateVideoGridLayout, 100);
-  }
-
-  async function createOffer(targetSessionId, attempt = 1) {
-    console.log(`📤 Creating offer for: ${targetSessionId} (attempt ${attempt})`);
-
-    // Проверяем, не создаем ли мы уже offer для этого соединения
-    if (peerConnections.has(targetSessionId)) {
-      const existingPc = peerConnections.get(targetSessionId);
-      if (existingPc.signalingState === "have-local-offer") {
-        console.log(`⏳ Already creating offer for ${targetSessionId}, waiting...`);
-        return;
-      }
-      
-      if (existingPc.signalingState === "stable" || existingPc.connectionState === "connected") {
-        console.log(`✅ Already connected to ${targetSessionId}`);
-        return;
-      }
-    }
-
-    try {
-      // Закрываем существующее проблемное соединение
-      if (peerConnections.has(targetSessionId)) {
-        const oldPc = peerConnections.get(targetSessionId);
-        if (oldPc.signalingState === "closed" || oldPc.connectionState === "failed") {
-          oldPc.close();
-          peerConnections.delete(targetSessionId);
-        }
-      }
-
-      const pc = await createPeerConnection(targetSessionId);
-
-      // Ждем стабилизации перед созданием offer
-      await new Promise(resolve => setTimeout(resolve, 300));
-
-      const offer = await pc.createOffer({
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      });
-
-      await pc.setLocalDescription(offer);
-      console.log(`✅ Local description set for ${targetSessionId}, state: ${pc.signalingState}`);
-
-      sendMessage({
-        type: "webrtc_offer",
-        roomId: currentRoomId,
-        targetSessionId: targetSessionId,
-        offer: offer,
-      });
-
-      console.log(`✅ Offer sent to ${targetSessionId}`);
-
-      // Устанавливаем таймаут для повторной отправки offer если не получили answer
-      setTimeout(() => {
-        if (peerConnections.has(targetSessionId)) {
-          const checkPc = peerConnections.get(targetSessionId);
-          if (checkPc.signalingState === "have-local-offer" && checkPc.connectionState !== "connected") {
-            console.log(`🔄 No answer received from ${targetSessionId}, retrying...`);
-            createOffer(targetSessionId, attempt + 1);
-          }
-        }
-      }, 10000); // 10 секунд
-
-    } catch (error) {
-      console.error("❌ Error creating offer:", error);
-      
-      if (peerConnections.has(targetSessionId)) {
-        peerConnections.get(targetSessionId).close();
-        peerConnections.delete(targetSessionId);
-      }
-
-      // Повторная попытка с экспоненциальной задержкой
-      if (attempt < 3) {
-        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000);
-        console.log(`🔄 Retrying offer creation for ${targetSessionId} in ${delay}ms...`);
-        setTimeout(() => createOffer(targetSessionId, attempt + 1), delay);
-      }
-    }
-  }
-
-  function handleUserJoined(message) {
-    console.log(`👤 User ${message.userName} joined the call`);
-    
-    // Обновляем список пользователей в комнате
-    if (!roomUsers.has(message.sessionId)) {
-      roomUsers.set(message.sessionId, {
-        userId: message.userId,
-        userName: message.userName,
-        sessionId: message.sessionId
-      });
-      
-      updateParticipantsCount(roomUsers.size);
-      
-      // Если это не мы и соединения нет, создаем его
-      if (isInCall && message.sessionId !== mySessionId && !peerConnections.has(message.sessionId)) {
-        console.log(`🔗 Creating connection with new user: ${message.userName}`);
-        
-        // Используем логику приоритета для избежания конфликтов
-        const shouldCreateOffer = mySessionId < message.sessionId;
-        
-        if (shouldCreateOffer) {
-          setTimeout(() => {
-            createOffer(message.sessionId);
-          }, 1000);
-        }
-      }
-    }
-  }
-
-  async function handleRoomUsers(message) {
-    console.log("👥 Room users received:", message.users);
-
-    roomUsers.clear();
-    message.users.forEach((user) => {
-      roomUsers.set(user.sessionId, user);
-    });
-
-    updateParticipantsCount(message.users.length);
-    setTimeout(updateVideoGridLayout, 100);
-
-    const otherUsers = message.users.filter(
-      (user) => user.sessionId !== mySessionId
-    );
-
-    console.log(`🔗 Need to connect to ${otherUsers.length} other users`);
-
-    // Определяем, кто должен создавать offer
-    // Используем простую логику: пользователь с меньшим sessionId создает offer
-    const shouldCreateOffer = mySessionId < otherUsers[0]?.sessionId;
-
-    for (let i = 0; i < otherUsers.length; i++) {
-      const user = otherUsers[i];
-      
-      if (!peerConnections.has(user.sessionId)) {
-        console.log(
-          `🔗 Setting up connection with: ${user.userName} (${user.sessionId})`
+      if (pc.iceConnectionState === "disconnected") {
+        console.warn(
+          `🧊 ICE disconnected with ${targetSessionId}, checking connection...`
         );
 
-        await new Promise((resolve) => setTimeout(resolve, 1000 + i * 500));
-
-        try {
-          if (shouldCreateOffer) {
-            await createOffer(user.sessionId);
-            console.log(`✅ Created offer for ${user.userName}`);
-          } else {
-            console.log(`⏳ Waiting for offer from ${user.userName}`);
-            // Будем ждать offer от другого пользователя
+        setTimeout(() => {
+          if (
+            pc.iceConnectionState === "disconnected" ||
+            pc.iceConnectionState === "failed"
+          ) {
+            console.log(
+              `🔄 ICE still disconnected, restarting connection with ${targetSessionId}`
+            );
+            restartIceConnection(pc, targetSessionId);
           }
-        } catch (error) {
+        }, 5000);
+      } else if (pc.iceConnectionState === "failed") {
+        console.error(`🧊 ICE failed with ${targetSessionId}`);
+        restartIceConnection(pc, targetSessionId);
+      } else if (pc.iceConnectionState === "connected") {
+        console.log(`🧊 ICE connected to ${targetSessionId}`);
+        updateCallStatus("connected");
+      }
+    };
+  }
+
+  function restartIceConnection(pc, targetSessionId) {
+    if (!currentRoomId) return;
+
+    console.log(`🔄 Restarting ICE connection for ${targetSessionId}`);
+
+    try {
+      pc.createOffer({
+        iceRestart: true,
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      })
+        .then((offer) => {
+          return pc.setLocalDescription(offer);
+        })
+        .then(() => {
+          console.log(`✅ ICE restart offer created for ${targetSessionId}`);
+
+          sendMessage({
+            type: "webrtc_offer",
+            roomId: currentRoomId,
+            targetSessionId: targetSessionId,
+            offer: pc.localDescription,
+            iceRestart: true,
+          });
+        })
+        .catch((error) => {
           console.error(
-            `❌ Failed to setup connection with ${user.userName}:`,
+            `❌ Error during ICE restart for ${targetSessionId}:`,
             error
           );
-        }
-      }
+          restartConnection(targetSessionId);
+        });
+    } catch (error) {
+      console.error(
+        `❌ Error initiating ICE restart for ${targetSessionId}:`,
+        error
+      );
+      restartConnection(targetSessionId);
     }
+  }
+
+  function restartConnection(targetSessionId) {
+    if (!currentRoomId) return;
+
+    console.log(`🔄 Performing full connection restart for ${targetSessionId}`);
+
+    if (peerConnections.has(targetSessionId)) {
+      const oldPc = peerConnections.get(targetSessionId);
+      oldPc.close();
+      peerConnections.delete(targetSessionId);
+
+      removeVideoElement(targetSessionId);
+    }
+
+    setTimeout(() => {
+      if (currentRoomId && roomUsers.has(targetSessionId)) {
+        console.log(`🔗 Creating new connection for ${targetSessionId}`);
+        createOffer(targetSessionId);
+      }
+    }, 2000);
   }
 
   async function createPeerConnection(targetSessionId) {
@@ -1429,10 +1849,10 @@
     try {
       const pc = new RTCPeerConnection(rtcConfig);
 
-      // Инициализируем массив для отложенных ICE кандидатов
       pc.pendingIceCandidates = [];
 
-      // Обработчик получения удаленных потоков
+      setupConnectionStateHandlers(pc, targetSessionId);
+
       pc.ontrack = (event) => {
         console.log(
           "📹 Received remote track from:",
@@ -1444,7 +1864,6 @@
         }
       };
 
-      // Обработчик ICE кандидатов
       pc.onicecandidate = (event) => {
         if (event.candidate && currentRoomId) {
           console.log(`🧊 Sending ICE candidate to ${targetSessionId}`);
@@ -1459,53 +1878,6 @@
         }
       };
 
-      // Обработчики состояния соединения
-      pc.onconnectionstatechange = () => {
-        console.log(
-          `🔗 Connection state for ${targetSessionId}: ${pc.connectionState}`
-        );
-
-        if (pc.connectionState === "connected") {
-          console.log(`✅ Successfully connected to ${targetSessionId}`);
-          updateCallStatus("connected");
-
-          // Очищаем отложенные кандидаты при успешном соединении
-          if (pc.pendingIceCandidates) {
-            pc.pendingIceCandidates = [];
-          }
-        } else if (pc.connectionState === "failed") {
-          console.warn(`❌ Connection failed with ${targetSessionId}`);
-        } else if (pc.connectionState === "closed") {
-          console.log(`🔒 Connection closed with ${targetSessionId}`);
-        }
-      };
-
-      // Обработчик ICE соединения
-      pc.oniceconnectionstatechange = () => {
-        console.log(
-          `🧊 ICE connection state for ${targetSessionId}: ${pc.iceConnectionState}`
-        );
-
-        if (pc.iceConnectionState === "connected") {
-          console.log(`✅ ICE connected to ${targetSessionId}`);
-        } else if (pc.iceConnectionState === "failed") {
-          console.warn(`❌ ICE failed with ${targetSessionId}`);
-        }
-      };
-
-      // Обработчик состояния сигналинга
-      pc.onsignalingstatechange = () => {
-        console.log(
-          `📡 Signaling state for ${targetSessionId}: ${pc.signalingState}`
-        );
-
-        // Когда signaling state становится stable, обрабатываем отложенные кандидаты
-        if (pc.signalingState === "stable" && pc.remoteDescription) {
-          processPendingIceCandidates(pc, targetSessionId);
-        }
-      };
-
-      // Добавляем локальные треки
       if (localStream) {
         localStream.getTracks().forEach((track) => {
           try {
@@ -1530,88 +1902,175 @@
     }
   }
 
-  function cleanupPendingCandidates(sessionId) {
-    const pc = peerConnections.get(sessionId);
-    if (pc && pc.pendingIceCandidates) {
+  function showRemoteVideo(sessionId, remoteStream) {
+    const remoteVideoId = `remoteVideo_${sessionId}`;
+    let remoteVideo = document.getElementById(remoteVideoId);
+    let videoContainer = document.getElementById(`videoContainer_${sessionId}`);
+
+    if (!videoContainer) {
+      videoContainer = document.createElement("div");
+      videoContainer.className = "video-container";
+      videoContainer.id = `videoContainer_${sessionId}`;
+
+      remoteVideo = document.createElement("video");
+      remoteVideo.id = remoteVideoId;
+      remoteVideo.autoplay = true;
+      remoteVideo.playsInline = true;
+      remoteVideo.className = "remote-video";
+      remoteVideo.muted = false;
+
+      remoteVideo.onerror = (e) => {
+        console.error(`❌ Video error for ${sessionId}:`, e);
+      };
+
+      remoteVideo.onloadedmetadata = () => {
+        console.log(`✅ Video loaded for ${sessionId}`);
+        remoteVideo
+          .play()
+          .catch((e) => console.log(`⚠️ Auto-play prevented for ${sessionId}`));
+      };
+
+      const videoLabel = document.createElement("div");
+      videoLabel.className = "video-label";
+
+      const userName = roomUsers.get(sessionId)?.userName || "Участник";
+      videoLabel.textContent = userName;
+
+      videoContainer.appendChild(remoteVideo);
+      videoContainer.appendChild(videoLabel);
+
+      const videoGrid = document.querySelector(".video-grid");
+      if (videoGrid) {
+        videoGrid.appendChild(videoContainer);
+      }
+    }
+
+    if (remoteVideo && remoteVideo.srcObject !== remoteStream) {
+      try {
+        remoteVideo.srcObject = remoteStream;
+        console.log(`✅ Remote video stream set for ${sessionId}`);
+      } catch (error) {
+        console.error(`❌ Error setting remote video for ${sessionId}:`, error);
+      }
+    }
+
+    setTimeout(updateVideoGridLayout, 100);
+  }
+
+  async function createOffer(targetSessionId, attempt = 1) {
+    console.log(
+      `📤 Creating offer for: ${targetSessionId} (attempt ${attempt})`
+    );
+
+    if (peerConnections.has(targetSessionId)) {
+      const existingPc = peerConnections.get(targetSessionId);
+
+      if (
+        existingPc.signalingState === "have-local-offer" ||
+        existingPc.connectionState === "connected" ||
+        existingPc.iceConnectionState === "connected"
+      ) {
+        console.log(
+          `⏳ Connection with ${targetSessionId} already in progress or established, skipping duplicate offer`
+        );
+        return;
+      }
+
+      if (
+        existingPc.signalingState === "closed" ||
+        existingPc.connectionState === "failed" ||
+        existingPc.iceConnectionState === "failed"
+      ) {
+        console.log(`🔄 Closing failed connection with ${targetSessionId}`);
+        existingPc.close();
+        peerConnections.delete(targetSessionId);
+      }
+    }
+
+    try {
+      const pc = await createPeerConnection(targetSessionId);
+
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+
+      await pc.setLocalDescription(offer);
       console.log(
-        `🧹 Cleaning up ${pc.pendingIceCandidates.length} pending ICE candidates for ${sessionId}`
+        `✅ Local description set for ${targetSessionId}, state: ${pc.signalingState}`
       );
-      pc.pendingIceCandidates = [];
+
+      sendMessage({
+        type: "webrtc_offer",
+        roomId: currentRoomId,
+        targetSessionId: targetSessionId,
+        offer: offer,
+      });
+
+      console.log(`✅ Offer sent to ${targetSessionId}`);
+    } catch (error) {
+      console.error("❌ Error creating offer:", error);
+
+      if (peerConnections.has(targetSessionId)) {
+        peerConnections.get(targetSessionId).close();
+        peerConnections.delete(targetSessionId);
+      }
+
+      if (attempt < 3) {
+        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 5000);
+        console.log(
+          `🔄 Retrying offer creation for ${targetSessionId} in ${delay}ms...`
+        );
+        setTimeout(() => createOffer(targetSessionId, attempt + 1), delay);
+      } else {
+        console.error(
+          `❌ Failed to create offer for ${targetSessionId} after ${attempt} attempts`
+        );
+      }
     }
   }
 
-  function debugConnections() {
-    console.log("🔍 DEBUG CONNECTIONS:");
-    console.log(`Room Users: ${roomUsers.size}`);
-    roomUsers.forEach((user, sessionId) => {
-      console.log(
-        `- ${user.userName} (${sessionId}) ${
-          sessionId === mySessionId ? "(You)" : ""
-        }`
-      );
-    });
+  function handleUserJoined(message) {
+    console.log(`👤 User ${message.userName} joined the call`);
 
-    console.log(`Peer Connections: ${peerConnections.size}`);
-    peerConnections.forEach((pc, sessionId) => {
-      console.log(
-        `- ${sessionId}: ${pc.connectionState} (ICE: ${pc.iceConnectionState})`
-      );
-    });
+    if (!roomUsers.has(message.sessionId)) {
+      roomUsers.set(message.sessionId, {
+        userId: message.userId,
+        userName: message.userName,
+        sessionId: message.sessionId,
+      });
 
-    console.log(
-      `Video Elements: ${document.querySelectorAll(".video-container").length}`
-    );
-  }
+      updateParticipantsCount(roomUsers.size);
 
-  // Вызывайте эту функцию для отладки при необходимости
+      if (
+        isInCall &&
+        message.sessionId !== mySessionId &&
+        !peerConnections.has(message.sessionId)
+      ) {
+        console.log(
+          `🔗 Considering connection with new user: ${message.userName}`
+        );
 
-  function refreshAllConnections() {
-    console.log("🔄 Refreshing all peer connections...");
+        setTimeout(() => {
+          if (currentRoomId && !peerConnections.has(message.sessionId)) {
+            const shouldCreateOffer = mySessionId < message.sessionId;
 
-    const disconnectedConnections = Array.from(
-      peerConnections.entries()
-    ).filter(
-      ([sessionId, pc]) =>
-        pc.connectionState !== "connected" &&
-        pc.connectionState !== "connecting"
-    );
-
-    console.log(
-      `🔄 Found ${disconnectedConnections.length} disconnected connections`
-    );
-
-    // Обновляем только отключенные соединения с задержкой
-    disconnectedConnections.forEach(async ([sessionId], index) => {
-      await new Promise((resolve) => setTimeout(resolve, index * 2000)); // 2 секунды между каждым
-      if (currentRoomId && peerConnections.has(sessionId)) {
-        createOffer(sessionId);
+            if (shouldCreateOffer) {
+              console.log(`🎯 We should create offer for ${message.userName}`);
+              createOffer(message.sessionId);
+            } else {
+              console.log(
+                `🎯 We should wait for offer from ${message.userName}`
+              );
+              createPeerConnection(message.sessionId);
+            }
+          }
+        }, 2000);
       }
-    });
+    }
   }
-
-  // Увеличьте интервал проверки соединений
-  // setInterval(() => {
-  //   if (isInCall && peerConnections.size > 0) {
-  //     let disconnectedCount = 0;
-  //     peerConnections.forEach((pc, sessionId) => {
-  //       if (
-  //         pc.connectionState !== "connected" &&
-  //         pc.connectionState !== "connecting"
-  //       ) {
-  //         disconnectedCount++;
-  //         console.log(
-  //           `⚠️ Connection with ${sessionId} is ${pc.connectionState}`
-  //         );
-  //       }
-  //     });
-
-  //     if (disconnectedCount > 0 && disconnectedCount <= 4) {
-  //       // Ограничиваем количество одновременных переподключений
-  //       console.log(`🔄 ${disconnectedCount} connections need refresh`);
-  //       refreshAllConnections();
-  //     }
-  //   }
-  // }, 30000); // Увеличиваем до 30 секунд
 
   async function handleRoomUsers(message) {
     console.log("👥 Room users received:", message.users);
@@ -1622,18 +2081,14 @@
     });
 
     updateParticipantsCount(message.users.length);
-
-    // Обновляем компоновку сетки
     setTimeout(updateVideoGridLayout, 100);
 
-    // Создаем соединения с другими пользователями с задержкой
     const otherUsers = message.users.filter(
       (user) => user.sessionId !== mySessionId
     );
 
     console.log(`🔗 Need to connect to ${otherUsers.length} other users`);
 
-    // Создаем соединения последовательно с задержкой
     for (let i = 0; i < otherUsers.length; i++) {
       const user = otherUsers[i];
 
@@ -1642,12 +2097,11 @@
           `🔗 Setting up connection with: ${user.userName} (${user.sessionId})`
         );
 
-        // Добавляем задержку между созданием соединений
         await new Promise((resolve) => setTimeout(resolve, 1000 + i * 500));
 
         try {
           await createOffer(user.sessionId);
-          console.log(`✅ Connection setup initiated for ${user.userName}`);
+          console.log(`✅ Created offer for ${user.userName}`);
         } catch (error) {
           console.error(
             `❌ Failed to setup connection with ${user.userName}:`,
@@ -1658,165 +2112,9 @@
     }
   }
 
-  async function handleWebRTCOffer(message) {
-    try {
-      console.log(`📥 Received WebRTC offer from: ${message.fromSessionId}`);
-
-      // Если у нас уже есть активное соединение в состоянии have-local-offer,
-      // значит мы тоже отправили offer - это конфликт
-      if (peerConnections.has(message.fromSessionId)) {
-        const existingPc = peerConnections.get(message.fromSessionId);
-        if (existingPc.signalingState === "have-local-offer") {
-          console.log(`🔄 Offer conflict detected with ${message.fromSessionId}, closing our offer`);
-          existingPc.close();
-          peerConnections.delete(message.fromSessionId);
-        }
-      }
-
-      // Если соединение уже установлено, игнорируем новый offer
-      if (peerConnections.has(message.fromSessionId)) {
-        const existingPc = peerConnections.get(message.fromSessionId);
-        if (existingPc.connectionState === "connected") {
-          console.log(`✅ Already connected to ${message.fromSessionId}, ignoring duplicate offer`);
-          return;
-        }
-      }
-
-      const pc = await createPeerConnection(message.fromSessionId);
-
-      // Устанавливаем удаленное описание
-      await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
-      console.log(`✅ Remote description set, state: ${pc.signalingState}`);
-
-      // Обрабатываем отложенные ICE кандидаты
-      await processPendingIceCandidates(pc, message.fromSessionId);
-
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-
-      sendMessage({
-        type: "webrtc_answer",
-        roomId: message.roomId,
-        targetSessionId: message.fromSessionId,
-        answer: answer,
-      });
-
-      console.log(`✅ Answer created and sent to ${message.fromSessionId}`);
-    } catch (error) {
-      console.error("❌ Error handling WebRTC offer:", error);
-      
-      if (message.fromSessionId && peerConnections.has(message.fromSessionId)) {
-        peerConnections.get(message.fromSessionId).close();
-        peerConnections.delete(message.fromSessionId);
-      }
-    }
-  }
-
-  
-
-  async function handleWebRTCAnswer(message) {
-    try {
-      console.log(`📥 Received WebRTC answer from: ${message.fromSessionId}`);
-
-      const pc = peerConnections.get(message.fromSessionId);
-      if (!pc) {
-        console.warn(`❌ No peer connection found for ${message.fromSessionId}`);
-        return;
-      }
-
-      // Проверяем состояние сигналинга
-      console.log(`📡 Current signaling state: ${pc.signalingState}`);
-
-      // Если соединение уже установлено, игнорируем дублирующий answer
-      if (pc.signalingState === "stable") {
-        console.log(`✅ Connection already stable with ${message.fromSessionId}, ignoring duplicate answer`);
-        return;
-      }
-
-      // Если мы не в состоянии have-local-offer, answer не нужен
-      if (pc.signalingState !== "have-local-offer") {
-        console.warn(`⚠️ Wrong signaling state for answer: ${pc.signalingState}, expected have-local-offer`);
-        
-        // Если соединение в плохом состоянии, пересоздаем его
-        if (pc.signalingState === "closed" || pc.connectionState === "failed") {
-          console.log(`🔄 Recreating connection with ${message.fromSessionId}`);
-          peerConnections.delete(message.fromSessionId);
-          setTimeout(() => createOffer(message.fromSessionId), 1000);
-        }
-        return;
-      }
-
-      // Устанавливаем удаленное описание
-      await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
-      console.log(`✅ Remote description set for ${message.fromSessionId}, signaling state: ${pc.signalingState}`);
-
-      // Обрабатываем отложенные ICE кандидаты
-      await processPendingIceCandidates(pc, message.fromSessionId);
-
-    } catch (error) {
-      console.error("❌ Error handling WebRTC answer:", error);
-      
-      // Более детальная обработка ошибок
-      if (error.toString().includes("wrong state: stable")) {
-        console.log(`✅ Answer already processed for ${message.fromSessionId}, connection is stable`);
-        return;
-      }
-      
-      if (error.toString().includes("closed") || error.toString().includes("failed")) {
-        console.log(`🔄 Connection with ${message.fromSessionId} is closed/failed, will recreate`);
-        if (peerConnections.has(message.fromSessionId)) {
-          peerConnections.get(message.fromSessionId).close();
-          peerConnections.delete(message.fromSessionId);
-        }
-        setTimeout(() => createOffer(message.fromSessionId), 2000);
-      }
-    }
-  }
-
-  async function handleICECandidate(message) {
-    try {
-      const pc = peerConnections.get(message.fromSessionId);
-      if (!pc) {
-        console.warn(
-          `❌ No peer connection for ICE candidate from ${message.fromSessionId}`
-        );
-        return;
-      }
-
-      // Проверяем состояние соединения
-      if (pc.signalingState === "closed" || pc.connectionState === "closed") {
-        console.warn(
-          `⚠️ Connection closed for ${message.fromSessionId}, ignoring ICE candidate`
-        );
-        return;
-      }
-
-      // Если remote description еще не установлен, сохраняем кандидата в очередь
-      if (!pc.remoteDescription) {
-        console.log(
-          `⏳ Queueing ICE candidate - waiting for remote description from ${message.fromSessionId}`
-        );
-
-        // Создаем очередь для отложенных кандидатов
-        if (!pc.pendingIceCandidates) {
-          pc.pendingIceCandidates = [];
-        }
-        pc.pendingIceCandidates.push(new RTCIceCandidate(message.candidate));
-        return;
-      }
-
-      // Пытаемся добавить кандидат
-      await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
-      console.log(`🧊 ICE candidate added from ${message.fromSessionId}`);
-    } catch (error) {
-      console.error("❌ Error handling ICE candidate:", error);
-      // Не критичная ошибка - продолжаем работу
-    }
-  }
-
   function handleUserLeft(message) {
     console.log(`👤 User ${message.userName} left the call`);
-    
+
     roomUsers.delete(message.sessionId);
 
     if (peerConnections.has(message.sessionId)) {
@@ -1826,8 +2124,14 @@
 
     removeVideoElement(message.sessionId);
     updateParticipantsCount(roomUsers.size);
-    
+
     showSystemMessage(`👤 ${message.userName} покинул звонок`);
+
+    if (roomUsers.size === 1 && roomUsers.has(mySessionId)) {
+      showSystemMessage(
+        "ℹ️ Все участники покинули звонок. Вы можете завершить его."
+      );
+    }
   }
 
   function removeVideoElement(sessionId) {
@@ -1836,7 +2140,6 @@
     );
     if (videoContainer) {
       videoContainer.remove();
-      // Обновляем компоновку сетки после удаления
       setTimeout(updateVideoGridLayout, 100);
     }
   }
@@ -1863,37 +2166,15 @@
     }
   }
 
-  function debugRoomUsers() {
-    console.log("🔍 DEBUG Room Users:");
-    console.log(`Total in room: ${roomUsers.size}`);
-    roomUsers.forEach((user, sessionId) => {
-      console.log(
-        `- ${user.userName} (${sessionId}) ${
-          sessionId === mySessionId ? "(You)" : ""
-        }`
-      );
-    });
-
-    console.log("🔍 DEBUG Peer Connections:");
-    console.log(`Total peer connections: ${peerConnections.size}`);
-    peerConnections.forEach((pc, sessionId) => {
-      console.log(`- ${sessionId}: ${pc.connectionState}`);
-    });
-
-    console.log("🔍 DEBUG Video Elements:");
-    const videoContainers = document.querySelectorAll(".video-container");
-    console.log(`Total video containers: ${videoContainers.length}`);
-  }
-
-  // Вызывайте эту функцию для отладки:
-  // debugRoomUsers();
-
   function updateParticipantsCount(count) {
     participantsCount = count;
+
+    const displayCount = Math.max(count, 1);
+
     if (participantsCountEl) {
-      participantsCountEl.textContent = `Участников: ${count}`;
-      // Добавляем визуальную индикацию если участников больше 2
-      if (count > 2) {
+      participantsCountEl.textContent = `Участников: ${displayCount}`;
+
+      if (displayCount > 2) {
         participantsCountEl.style.color = "#fbbf24";
         participantsCountEl.style.fontWeight = "bold";
       } else {
@@ -1902,20 +2183,263 @@
       }
     }
 
-    // Логируем для отладки
-    console.log(`👥 Participants count updated: ${count}`);
-    debugRoomUsers();
+    console.log(
+      `👥 Participants count updated: ${displayCount} (actual: ${count})`
+    );
+  }
+
+  function updateVideoGridLayout() {
+    const videoGrid = document.querySelector(".video-grid");
+    if (!videoGrid) return;
+
+    const videoContainers = videoGrid.querySelectorAll(".video-container");
+    const containerCount = videoContainers.length;
+
+    videoGrid.className = "video-grid";
+    videoContainers.forEach((container) => {
+      container.className = "video-container";
+    });
+
+    if (containerCount <= 2) {
+      videoGrid.style.gridTemplateColumns = "1fr 1fr";
+    } else if (containerCount <= 4) {
+      videoGrid.style.gridTemplateColumns = "1fr 1fr";
+      videoGrid.style.gridTemplateRows = "1fr 1fr";
+    } else {
+      videoGrid.style.gridTemplateColumns =
+        "repeat(auto-fit, minmax(300px, 1fr))";
+    }
+
+    console.log(`🎬 Video grid updated: ${containerCount} participants`);
+  }
+
+  async function handleWebRTCOffer(message) {
+    try {
+      console.log(`📥 Received WebRTC offer from: ${message.fromSessionId}`);
+
+      if (peerConnections.has(message.fromSessionId)) {
+        const existingPc = peerConnections.get(message.fromSessionId);
+        if (existingPc.signalingState === "have-local-offer") {
+          console.log(
+            `🔄 Offer conflict detected with ${message.fromSessionId}, closing our offer`
+          );
+          existingPc.close();
+          peerConnections.delete(message.fromSessionId);
+        }
+      }
+
+      if (peerConnections.has(message.fromSessionId)) {
+        const existingPc = peerConnections.get(message.fromSessionId);
+        if (existingPc.connectionState === "connected") {
+          console.log(
+            `✅ Already connected to ${message.fromSessionId}, ignoring duplicate offer`
+          );
+          return;
+        }
+      }
+
+      const pc = await createPeerConnection(message.fromSessionId);
+
+      await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
+      console.log(`✅ Remote description set, state: ${pc.signalingState}`);
+
+      await processPendingIceCandidates(pc, message.fromSessionId);
+
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+
+      sendMessage({
+        type: "webrtc_answer",
+        roomId: message.roomId,
+        targetSessionId: message.fromSessionId,
+        answer: answer,
+      });
+
+      console.log(`✅ Answer created and sent to ${message.fromSessionId}`);
+    } catch (error) {
+      console.error("❌ Error handling WebRTC offer:", error);
+
+      if (message.fromSessionId && peerConnections.has(message.fromSessionId)) {
+        peerConnections.get(message.fromSessionId).close();
+        peerConnections.delete(message.fromSessionId);
+      }
+    }
+  }
+
+  async function handleWebRTCAnswer(message) {
+    try {
+      console.log(`📥 Received WebRTC answer from: ${message.fromSessionId}`);
+
+      const pc = peerConnections.get(message.fromSessionId);
+      if (!pc) {
+        console.warn(
+          `❌ No peer connection found for ${message.fromSessionId}`
+        );
+        return;
+      }
+
+      console.log(`📡 Current signaling state: ${pc.signalingState}`);
+
+      if (pc.signalingState === "stable") {
+        console.log(
+          `✅ Connection already stable with ${message.fromSessionId}, ignoring duplicate answer`
+        );
+        return;
+      }
+
+      if (pc.signalingState !== "have-local-offer") {
+        console.warn(
+          `⚠️ Wrong signaling state for answer: ${pc.signalingState}, expected have-local-offer`
+        );
+
+        if (pc.signalingState === "closed" || pc.connectionState === "failed") {
+          console.log(`🔄 Recreating connection with ${message.fromSessionId}`);
+          peerConnections.delete(message.fromSessionId);
+          setTimeout(() => createOffer(message.fromSessionId), 1000);
+        }
+        return;
+      }
+
+      await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
+      console.log(
+        `✅ Remote description set for ${message.fromSessionId}, signaling state: ${pc.signalingState}`
+      );
+
+      await processPendingIceCandidates(pc, message.fromSessionId);
+    } catch (error) {
+      console.error("❌ Error handling WebRTC answer:", error);
+
+      if (error.toString().includes("wrong state: stable")) {
+        console.log(
+          `✅ Answer already processed for ${message.fromSessionId}, connection is stable`
+        );
+        return;
+      }
+
+      if (
+        error.toString().includes("closed") ||
+        error.toString().includes("failed")
+      ) {
+        console.log(
+          `🔄 Connection with ${message.fromSessionId} is closed/failed, will recreate`
+        );
+        if (peerConnections.has(message.fromSessionId)) {
+          peerConnections.get(message.fromSessionId).close();
+          peerConnections.delete(message.fromSessionId);
+        }
+        setTimeout(() => createOffer(message.fromSessionId), 2000);
+      }
+    }
+  }
+
+  async function handleICECandidate(message) {
+    try {
+      const pc = peerConnections.get(message.fromSessionId);
+      if (!pc) {
+        console.warn(
+          `❌ No peer connection for ICE candidate from ${message.fromSessionId}`
+        );
+        return;
+      }
+
+      if (pc.signalingState === "closed" || pc.connectionState === "closed") {
+        console.warn(
+          `⚠️ Connection closed for ${message.fromSessionId}, ignoring ICE candidate`
+        );
+        return;
+      }
+
+      const iceCandidate = new RTCIceCandidate(message.candidate);
+
+      if (!pc.remoteDescription) {
+        console.log(
+          `⏳ Queueing ICE candidate - waiting for remote description from ${message.fromSessionId}`
+        );
+
+        if (!pc.pendingIceCandidates) {
+          pc.pendingIceCandidates = [];
+        }
+        pc.pendingIceCandidates.push(iceCandidate);
+        return;
+      }
+
+      try {
+        await pc.addIceCandidate(iceCandidate);
+        console.log(`🧊 ICE candidate added from ${message.fromSessionId}`);
+
+        if (pc.iceConnectionState === "checking") {
+          console.log(
+            `🔍 ICE checking in progress for ${message.fromSessionId}`
+          );
+        }
+      } catch (addError) {
+        if (
+          addError.toString().includes("duplicate") ||
+          addError.toString().includes("already")
+        ) {
+          console.log(
+            `⚠️ Duplicate ICE candidate from ${message.fromSessionId}, ignoring`
+          );
+          return;
+        }
+        console.error(
+          `❌ Error adding ICE candidate from ${message.fromSessionId}:`,
+          addError
+        );
+      }
+    } catch (error) {
+      console.error("❌ Error handling ICE candidate:", error);
+    }
   }
 
   // UI управления звонком
   function showVideoCallUI() {
+    console.log("🎬 Showing video call UI");
+
+    const messagesEl = document.getElementById("messages");
+    const messageForm = document.getElementById("messageForm");
+    const emojiPanel = document.querySelector(".emoji-panel");
+
+    if (messagesEl) messagesEl.style.display = "none";
+    if (messageForm) messageForm.style.display = "none";
+    if (emojiPanel) emojiPanel.style.display = "none";
+
     videoCallContainer.classList.remove("hidden");
+    videoCallContainer.style.display = "flex";
+
+    updateCallStatus("connecting");
     updateCallButtons();
-    updateParticipantsCount(1);
+
+    updateParticipantsCount(roomUsers.size || 1);
+
+    console.log(
+      "✅ Video call UI shown - container visible:",
+      !videoCallContainer.classList.contains("hidden")
+    );
   }
 
   function hideVideoCallUI() {
+    console.log("🎬 Hiding video call UI");
+
+    const messagesEl = document.getElementById("messages");
+    const messageForm = document.getElementById("messageForm");
+    const emojiPanel = document.querySelector(".emoji-panel");
+
+    if (messagesEl) {
+      messagesEl.style.display = "block";
+      setTimeout(() => {
+        scrollToBottom();
+      }, 100);
+    }
+    if (messageForm) messageForm.style.display = "flex";
+    if (emojiPanel) emojiPanel.style.display = "flex";
+
     videoCallContainer.classList.add("hidden");
+    videoCallContainer.style.display = "none";
+
+    updateCallStatus("disconnected");
+
+    console.log("✅ Video call UI completely hidden");
   }
 
   function updateCallButtons() {
@@ -1954,39 +2478,49 @@
   function endCall() {
     console.log("📞 Ending call...");
 
-    // Отправляем сообщение о выходе из комнаты
     if (currentRoomId) {
       sendMessage({ type: "leave_room", roomId: currentRoomId });
       sendMessage({ type: "end_call", roomId: currentRoomId });
     }
 
-    // Закрываем все peer соединения с очисткой
     peerConnections.forEach((pc, sessionId) => {
-      cleanupPendingCandidates(sessionId);
       pc.close();
       removeVideoElement(sessionId);
     });
 
     peerConnections.clear();
 
-    // Останавливаем локальный поток
     if (localStream) {
       localStream.getTracks().forEach((track) => track.stop());
       localStream = null;
     }
 
-    // Сбрасываем состояние
     currentRoomId = null;
     isInCall = false;
     isCallInitiator = false;
     roomUsers.clear();
     incomingCall = null;
 
-    // Обновляем UI
+    document
+      .querySelectorAll(".video-container:not(#videoContainer_local)")
+      .forEach((container) => {
+        container.remove();
+      });
+
+    if (localVideo) {
+      localVideo.srcObject = null;
+    }
+
     hideVideoCallUI();
     hideIncomingCallModal();
     updateCallButtons();
     showSystemMessage("📞 Звонок завершен");
+
+    setTimeout(() => {
+      if (isConnected) {
+        sendMessage({ type: "get_active_calls" });
+      }
+    }, 1000);
   }
 
   function showBrowserNotification(title, body) {
@@ -2018,6 +2552,29 @@
     }
     endCall();
   });
+
+  // Автоматический мониторинг соединений
+  setInterval(() => {
+    if (!isInCall) return;
+
+    peerConnections.forEach((pc, sessionId) => {
+      const connectionTime = Date.now() - (pc.createdAt || Date.now());
+
+      if (
+        (pc.connectionState === "disconnected" ||
+          pc.iceConnectionState === "disconnected") &&
+        connectionTime > 10000
+      ) {
+        console.log(`🔄 Auto-restarting stuck connection with ${sessionId}`);
+        restartConnection(sessionId);
+      }
+
+      if (pc.connectionState === "connecting" && connectionTime > 15000) {
+        console.log(`🔄 Restarting stalled connection with ${sessionId}`);
+        restartConnection(sessionId);
+      }
+    });
+  }, 5000);
 
   // Инициализация при загрузке
   window.addEventListener("DOMContentLoaded", () => {

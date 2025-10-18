@@ -1,4 +1,4 @@
-// server.js - исправленная версия с правильной обработкой дублирующих сессий
+// server.js - с добавлением поддержки голосовых сообщений
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -56,6 +56,7 @@ const db = {
           file_type VARCHAR(100),
           file_size INTEGER,
           file_data BYTEA,
+          voice_duration INTEGER,
           created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
       `);
@@ -85,7 +86,7 @@ const db = {
 
   async ensureFileColumns(client) {
     try {
-      const columns = ["file_name", "file_type", "file_size", "file_data"];
+      const columns = ["file_name", "file_type", "file_size", "file_data", "voice_duration"];
       for (const column of columns) {
         try {
           await client.query(`SELECT ${column} FROM messages LIMIT 1`);
@@ -93,7 +94,7 @@ const db = {
           if (error.code === "42703") {
             console.log(`Adding ${column} column to messages table...`);
             const type =
-              column === "file_size"
+              column === "file_size" || column === "voice_duration"
                 ? "INTEGER"
                 : column === "file_data"
                 ? "BYTEA"
@@ -259,7 +260,8 @@ const db = {
     filetype,
     size,
     data,
-    targetUserId = null
+    targetUserId = null,
+    voiceDuration = null
   ) {
     const client = await pool.connect();
     try {
@@ -267,9 +269,9 @@ const db = {
       const buffer = Buffer.from(data, "base64");
 
       const result = await client.query(
-        `INSERT INTO messages (user_id, message_type, content, file_name, file_type, file_size, file_data, target_user_id) 
-         VALUES ($1, 'file', $2, $3, $4, $5, $6, $7) RETURNING id, created_at`,
-        [userId, filename, filename, filetype, size, buffer, targetUserId]
+        `INSERT INTO messages (user_id, message_type, content, file_name, file_type, file_size, file_data, target_user_id, voice_duration) 
+         VALUES ($1, 'file', $2, $3, $4, $5, $6, $7, $8) RETURNING id, created_at`,
+        [userId, filename, filename, filetype, size, buffer, targetUserId, voiceDuration]
       );
       return result.rows[0];
     } catch (error) {
@@ -286,7 +288,7 @@ const db = {
       const result = await client.query(
         `SELECT m.id, m.message_type as type, m.content, m.created_at, 
                 u.username as name, u.id as user_id, m.target_user_id,
-                m.file_name, m.file_type, m.file_size
+                m.file_name, m.file_type, m.file_size, m.voice_duration
          FROM messages m 
          JOIN users u ON m.user_id = u.id
          WHERE (m.message_type != 'private' OR m.target_user_id IS NULL)
@@ -307,6 +309,7 @@ const db = {
           message.file_name = row.file_name;
           message.file_type = row.file_type;
           message.file_size = row.file_size;
+          message.voice_duration = row.voice_duration;
         }
 
         return message;
@@ -763,6 +766,8 @@ wss.on("connection", async (ws, req) => {
                 "audio/mpeg",
                 "audio/wav",
                 "audio/ogg",
+                "audio/webm",
+                "audio/mp4",
                 "application/pdf",
                 "text/plain",
                 "application/msword",
@@ -779,12 +784,15 @@ wss.on("connection", async (ws, req) => {
                 return;
               }
 
+              // Сохраняем голосовое сообщение с длительностью
               await db.saveFileMessage(
                 userId,
                 message.filename,
                 message.filetype,
                 message.size,
-                message.data
+                message.data,
+                null,
+                message.duration
               );
 
               broadcast({
@@ -795,6 +803,7 @@ wss.on("connection", async (ws, req) => {
                 filetype: message.filetype,
                 size: message.size,
                 data: message.data,
+                duration: message.duration,
                 ts: Date.now(),
               });
             } catch (error) {
@@ -1018,6 +1027,7 @@ wss.on("connection", async (ws, req) => {
                 creator: sessionId,
                 createdAt: Date.now(),
                 isGroupCall: false,
+                isActive: true, // ДОБАВЬТЕ ЭТУ СТРОЧКУ
               });
 
               console.log(
@@ -1027,7 +1037,7 @@ wss.on("connection", async (ws, req) => {
               // Сначала отправляем подтверждение инициатору
               ws.send(
                 JSON.stringify({
-                  type: "call_started",
+                  type: "call_started", // УБЕДИТЕСЬ ЧТО ТИП call_started
                   roomId: roomId,
                   targetUserName: targetClient.user.username,
                   message: `Вызываем ${targetClient.user.username}...`,
