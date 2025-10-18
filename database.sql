@@ -16,7 +16,7 @@ CREATE TABLE messages (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
     message_type VARCHAR(20) NOT NULL, -- 'message', 'system', 'action', 'reaction', 'private'
-    content TEXT NOT NULL,
+    content TEXT NOT NULL, 
     target_user_id INTEGER REFERENCES users(id), -- для приватных сообщений
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
