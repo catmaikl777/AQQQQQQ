@@ -246,9 +246,19 @@
     console.log(`🎬 Video grid updated: ${containerCount} participants`);
   }
 
+  function getWebSocketUrl() {
+    // Для продакшена - ваш backend сервер
+    if (window.location.hostname.includes('vercel.app')) {
+      return "wss://aqqqqqq-2.onrender.com"; // Замените на ваш сервер
+    }
+    // Для локальной разработки
+    return "ws://localhost:3000";
+  }
+
+
   // WebSocket соединение
   function connectWebSocket() {
-    const wsUrl = "https://aqqqqqq-2.onrender.com";
+    const wsUrl = getWebSocketUrl;
 
     try {
       ws = new WebSocket(wsUrl);
@@ -1157,15 +1167,14 @@
       const pc = new RTCPeerConnection(rtcConfig);
 
       // Инициализируем массив для отложенных ICE кандидатов
-      pc.pendingCandidates = [];
+      pc.pendingIceCandidates = [];
+
+      // Настраиваем обработчики состояния
+      setupConnectionStateHandlers(pc, targetSessionId);
 
       // Обработчик получения удаленных потоков
       pc.ontrack = (event) => {
-        console.log(
-          "📹 Received remote track from:",
-          targetSessionId,
-          event.streams
-        );
+        console.log("📹 Received remote track from:", targetSessionId, event.streams);
         if (event.streams && event.streams[0]) {
           showRemoteVideo(targetSessionId, event.streams[0]);
         }
@@ -1181,23 +1190,8 @@
             targetSessionId: targetSessionId,
             candidate: event.candidate,
           });
-        }
-      };
-
-      // Обработчики состояния соединения
-      pc.onconnectionstatechange = () => {
-        console.log(
-          `🔗 Connection state for ${targetSessionId}: ${pc.connectionState}`
-        );
-
-        if (pc.connectionState === "connected") {
-          console.log(`✅ Successfully connected to ${targetSessionId}`);
-          updateCallStatus("connected");
-        } else if (pc.connectionState === "failed") {
-          console.warn(`❌ Connection failed with ${targetSessionId}`);
-          // Не переподключаемся автоматически - это вызывает цикл
-        } else if (pc.connectionState === "closed") {
-          console.log(`🔒 Connection closed with ${targetSessionId}`);
+        } else if (!event.candidate) {
+          console.log(`✅ All ICE candidates gathered for ${targetSessionId}`);
         }
       };
 
@@ -1206,9 +1200,7 @@
         localStream.getTracks().forEach((track) => {
           try {
             pc.addTrack(track, localStream);
-            console.log(
-              `✅ Added local track to connection with ${targetSessionId}`
-            );
+            console.log(`✅ Added local track to connection with ${targetSessionId}`);
           } catch (error) {
             console.error("Error adding track:", error);
           }
@@ -1218,10 +1210,7 @@
       peerConnections.set(targetSessionId, pc);
       return pc;
     } catch (error) {
-      console.error(
-        `❌ Error creating peer connection for ${targetSessionId}:`,
-        error
-      );
+      console.error(`❌ Error creating peer connection for ${targetSessionId}:`, error);
       throw error;
     }
   }
@@ -1279,6 +1268,112 @@
     setTimeout(updateVideoGridLayout, 100);
   }
 
+  async function createOffer(targetSessionId, attempt = 1) {
+    console.log(`📤 Creating offer for: ${targetSessionId} (attempt ${attempt})`);
+
+    // Проверяем, не создаем ли мы уже offer для этого соединения
+    if (peerConnections.has(targetSessionId)) {
+      const existingPc = peerConnections.get(targetSessionId);
+      if (existingPc.signalingState === "have-local-offer") {
+        console.log(`⏳ Already creating offer for ${targetSessionId}, waiting...`);
+        return;
+      }
+      
+      if (existingPc.signalingState === "stable" || existingPc.connectionState === "connected") {
+        console.log(`✅ Already connected to ${targetSessionId}`);
+        return;
+      }
+    }
+
+    try {
+      // Закрываем существующее проблемное соединение
+      if (peerConnections.has(targetSessionId)) {
+        const oldPc = peerConnections.get(targetSessionId);
+        if (oldPc.signalingState === "closed" || oldPc.connectionState === "failed") {
+          oldPc.close();
+          peerConnections.delete(targetSessionId);
+        }
+      }
+
+      const pc = await createPeerConnection(targetSessionId);
+
+      // Ждем стабилизации перед созданием offer
+      await new Promise(resolve => setTimeout(resolve, 300));
+
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+
+      await pc.setLocalDescription(offer);
+      console.log(`✅ Local description set for ${targetSessionId}, state: ${pc.signalingState}`);
+
+      sendMessage({
+        type: "webrtc_offer",
+        roomId: currentRoomId,
+        targetSessionId: targetSessionId,
+        offer: offer,
+      });
+
+      console.log(`✅ Offer sent to ${targetSessionId}`);
+
+      // Устанавливаем таймаут для повторной отправки offer если не получили answer
+      setTimeout(() => {
+        if (peerConnections.has(targetSessionId)) {
+          const checkPc = peerConnections.get(targetSessionId);
+          if (checkPc.signalingState === "have-local-offer" && checkPc.connectionState !== "connected") {
+            console.log(`🔄 No answer received from ${targetSessionId}, retrying...`);
+            createOffer(targetSessionId, attempt + 1);
+          }
+        }
+      }, 10000); // 10 секунд
+
+    } catch (error) {
+      console.error("❌ Error creating offer:", error);
+      
+      if (peerConnections.has(targetSessionId)) {
+        peerConnections.get(targetSessionId).close();
+        peerConnections.delete(targetSessionId);
+      }
+
+      // Повторная попытка с экспоненциальной задержкой
+      if (attempt < 3) {
+        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000);
+        console.log(`🔄 Retrying offer creation for ${targetSessionId} in ${delay}ms...`);
+        setTimeout(() => createOffer(targetSessionId, attempt + 1), delay);
+      }
+    }
+  }
+
+  function handleUserJoined(message) {
+    console.log(`👤 User ${message.userName} joined the call`);
+    
+    // Обновляем список пользователей в комнате
+    if (!roomUsers.has(message.sessionId)) {
+      roomUsers.set(message.sessionId, {
+        userId: message.userId,
+        userName: message.userName,
+        sessionId: message.sessionId
+      });
+      
+      updateParticipantsCount(roomUsers.size);
+      
+      // Если это не мы и соединения нет, создаем его
+      if (isInCall && message.sessionId !== mySessionId && !peerConnections.has(message.sessionId)) {
+        console.log(`🔗 Creating connection with new user: ${message.userName}`);
+        
+        // Используем логику приоритета для избежания конфликтов
+        const shouldCreateOffer = mySessionId < message.sessionId;
+        
+        if (shouldCreateOffer) {
+          setTimeout(() => {
+            createOffer(message.sessionId);
+          }, 1000);
+        }
+      }
+    }
+  }
+
   async function handleRoomUsers(message) {
     console.log("👥 Room users received:", message.users);
 
@@ -1288,8 +1383,6 @@
     });
 
     updateParticipantsCount(message.users.length);
-
-    // Обновляем компоновку сетки
     setTimeout(updateVideoGridLayout, 100);
 
     const otherUsers = message.users.filter(
@@ -1298,39 +1391,34 @@
 
     console.log(`🔗 Need to connect to ${otherUsers.length} other users`);
 
-    // Создаем соединения последовательно с задержкой
+    // Определяем, кто должен создавать offer
+    // Используем простую логику: пользователь с меньшим sessionId создает offer
+    const shouldCreateOffer = mySessionId < otherUsers[0]?.sessionId;
+
     for (let i = 0; i < otherUsers.length; i++) {
       const user = otherUsers[i];
-
-      // Проверяем, нет ли уже активного соединения
-      if (peerConnections.has(user.sessionId)) {
-        const existingPc = peerConnections.get(user.sessionId);
-        if (
-          existingPc.connectionState === "connected" ||
-          existingPc.connectionState === "connecting"
-        ) {
-          console.log(
-            `✅ Already connected/connecting to ${user.userName}, skipping`
-          );
-          continue;
-        }
-      }
-
-      console.log(
-        `🔗 Setting up connection with: ${user.userName} (${user.sessionId})`
-      );
-
-      // Добавляем задержку между созданием соединений
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      try {
-        await createOffer(user.sessionId);
-        console.log(`✅ Connection setup initiated for ${user.userName}`);
-      } catch (error) {
-        console.error(
-          `❌ Failed to setup connection with ${user.userName}:`,
-          error
+      
+      if (!peerConnections.has(user.sessionId)) {
+        console.log(
+          `🔗 Setting up connection with: ${user.userName} (${user.sessionId})`
         );
+
+        await new Promise((resolve) => setTimeout(resolve, 1000 + i * 500));
+
+        try {
+          if (shouldCreateOffer) {
+            await createOffer(user.sessionId);
+            console.log(`✅ Created offer for ${user.userName}`);
+          } else {
+            console.log(`⏳ Waiting for offer from ${user.userName}`);
+            // Будем ждать offer от другого пользователя
+          }
+        } catch (error) {
+          console.error(
+            `❌ Failed to setup connection with ${user.userName}:`,
+            error
+          );
+        }
       }
     }
   }
@@ -1574,27 +1662,24 @@
     try {
       console.log(`📥 Received WebRTC offer from: ${message.fromSessionId}`);
 
-      // Проверяем, не обрабатываем ли мы уже это предложение
+      // Если у нас уже есть активное соединение в состоянии have-local-offer,
+      // значит мы тоже отправили offer - это конфликт
       if (peerConnections.has(message.fromSessionId)) {
         const existingPc = peerConnections.get(message.fromSessionId);
-        if (
-          existingPc.signalingState !== "stable" &&
-          existingPc.signalingState !== "closed"
-        ) {
-          console.log(
-            `⚠️ Already processing offer from ${message.fromSessionId}, state: ${existingPc.signalingState}`
-          );
-          return;
+        if (existingPc.signalingState === "have-local-offer") {
+          console.log(`🔄 Offer conflict detected with ${message.fromSessionId}, closing our offer`);
+          existingPc.close();
+          peerConnections.delete(message.fromSessionId);
         }
       }
 
-      // Закрываем существующее соединение если есть
+      // Если соединение уже установлено, игнорируем новый offer
       if (peerConnections.has(message.fromSessionId)) {
-        const oldPc = peerConnections.get(message.fromSessionId);
-        if (oldPc.signalingState !== "closed") {
-          oldPc.close();
+        const existingPc = peerConnections.get(message.fromSessionId);
+        if (existingPc.connectionState === "connected") {
+          console.log(`✅ Already connected to ${message.fromSessionId}, ignoring duplicate offer`);
+          return;
         }
-        peerConnections.delete(message.fromSessionId);
       }
 
       const pc = await createPeerConnection(message.fromSessionId);
@@ -1603,7 +1688,7 @@
       await pc.setRemoteDescription(new RTCSessionDescription(message.offer));
       console.log(`✅ Remote description set, state: ${pc.signalingState}`);
 
-      // Обрабатываем отложенные ICE кандидаты после установки remote description
+      // Обрабатываем отложенные ICE кандидаты
       await processPendingIceCandidates(pc, message.fromSessionId);
 
       const answer = await pc.createAnswer();
@@ -1619,8 +1704,7 @@
       console.log(`✅ Answer created and sent to ${message.fromSessionId}`);
     } catch (error) {
       console.error("❌ Error handling WebRTC offer:", error);
-
-      // Очищаем проблемное соединение
+      
       if (message.fromSessionId && peerConnections.has(message.fromSessionId)) {
         peerConnections.get(message.fromSessionId).close();
         peerConnections.delete(message.fromSessionId);
@@ -1628,52 +1712,64 @@
     }
   }
 
+  
+
   async function handleWebRTCAnswer(message) {
     try {
       console.log(`📥 Received WebRTC answer from: ${message.fromSessionId}`);
 
       const pc = peerConnections.get(message.fromSessionId);
       if (!pc) {
-        console.warn(
-          `❌ No peer connection found for ${message.fromSessionId}`
-        );
+        console.warn(`❌ No peer connection found for ${message.fromSessionId}`);
         return;
       }
 
-      // Проверяем состояние соединения
-      if (pc.signalingState === "closed" || pc.connectionState === "closed") {
-        console.warn(
-          `⚠️ Connection is closed for ${message.fromSessionId}, ignoring answer`
-        );
+      // Проверяем состояние сигналинга
+      console.log(`📡 Current signaling state: ${pc.signalingState}`);
+
+      // Если соединение уже установлено, игнорируем дублирующий answer
+      if (pc.signalingState === "stable") {
+        console.log(`✅ Connection already stable with ${message.fromSessionId}, ignoring duplicate answer`);
         return;
       }
 
-      // Если соединение уже установлено, игнорируем новый answer
-      if (
-        pc.connectionState === "connected" ||
-        pc.iceConnectionState === "connected"
-      ) {
-        console.log(
-          `✅ Already connected to ${message.fromSessionId}, ignoring duplicate answer`
-        );
+      // Если мы не в состоянии have-local-offer, answer не нужен
+      if (pc.signalingState !== "have-local-offer") {
+        console.warn(`⚠️ Wrong signaling state for answer: ${pc.signalingState}, expected have-local-offer`);
+        
+        // Если соединение в плохом состоянии, пересоздаем его
+        if (pc.signalingState === "closed" || pc.connectionState === "failed") {
+          console.log(`🔄 Recreating connection with ${message.fromSessionId}`);
+          peerConnections.delete(message.fromSessionId);
+          setTimeout(() => createOffer(message.fromSessionId), 1000);
+        }
         return;
       }
 
       // Устанавливаем удаленное описание
       await pc.setRemoteDescription(new RTCSessionDescription(message.answer));
-      console.log(
-        `✅ Remote description set for ${message.fromSessionId}, signaling state: ${pc.signalingState}`
-      );
+      console.log(`✅ Remote description set for ${message.fromSessionId}, signaling state: ${pc.signalingState}`);
 
-      // Обрабатываем отложенные ICE кандидаты после установки remote description
+      // Обрабатываем отложенные ICE кандидаты
       await processPendingIceCandidates(pc, message.fromSessionId);
+
     } catch (error) {
       console.error("❌ Error handling WebRTC answer:", error);
-
-      // Не пересоздаем соединение при ошибке - это вызывает цикл
-      console.log(
-        `⚠️ Answer error for ${message.fromSessionId}, but not recreating connection to avoid loop`
-      );
+      
+      // Более детальная обработка ошибок
+      if (error.toString().includes("wrong state: stable")) {
+        console.log(`✅ Answer already processed for ${message.fromSessionId}, connection is stable`);
+        return;
+      }
+      
+      if (error.toString().includes("closed") || error.toString().includes("failed")) {
+        console.log(`🔄 Connection with ${message.fromSessionId} is closed/failed, will recreate`);
+        if (peerConnections.has(message.fromSessionId)) {
+          peerConnections.get(message.fromSessionId).close();
+          peerConnections.delete(message.fromSessionId);
+        }
+        setTimeout(() => createOffer(message.fromSessionId), 2000);
+      }
     }
   }
 
@@ -1719,6 +1815,8 @@
   }
 
   function handleUserLeft(message) {
+    console.log(`👤 User ${message.userName} left the call`);
+    
     roomUsers.delete(message.sessionId);
 
     if (peerConnections.has(message.sessionId)) {
@@ -1727,8 +1825,9 @@
     }
 
     removeVideoElement(message.sessionId);
-    showSystemMessage(`👤 ${message.userName} покинул звонок`);
     updateParticipantsCount(roomUsers.size);
+    
+    showSystemMessage(`👤 ${message.userName} покинул звонок`);
   }
 
   function removeVideoElement(sessionId) {
