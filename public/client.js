@@ -87,35 +87,30 @@
   function init() {
     setupEventListeners();
     initializeEmojiPanel();
-    checkUserName();
     connectWebSocket();
   }
 
-  function checkUserName() {
-    const savedName = localStorage.getItem("chatUserName");
-    if (savedName) {
-      hideNameModal();
-    } else {
-      showNameModal();
-    }
-  }
+  // function checkUserName() {
+  //   const savedName = localStorage.getItem("chatUserName");
+  //   if (savedName) {
+  //     hideNameModal();
+  //   } else {
+  //     showNameModal();
+  //   }
+  // }
 
-  function showNameModal() {
-    nameModal.classList.remove("hidden");
-    initialNameInput.focus();
-  }
+  // function showNameModal() {
+  //   nameModal.classList.remove("hidden");
+  //   initialNameInput.focus();
+  // }
 
-  function hideNameModal() {
-    nameModal.classList.add("hidden");
-  }
+  // function hideNameModal() {
+  //   nameModal.classList.add("hidden");
+  // }
 
   // Настройка обработчиков событий
   function setupEventListeners() {
     // Модальное окно имени
-    confirmNameBtn.addEventListener("click", handleInitialName);
-    initialNameInput.addEventListener("keypress", (e) => {
-      if (e.key === "Enter") handleInitialName();
-    });
 
     // Сайдбар
     sidebarToggle.addEventListener("click", toggleSidebar);
@@ -253,7 +248,7 @@
 
   // WebSocket соединение
   function connectWebSocket() {
-    const wsUrl = "https://aqqqqqq-1.onrender.com";
+    const wsUrl = "https://aqqqqqq-2.onrender.com";
 
     try {
       ws = new WebSocket(wsUrl);
@@ -427,20 +422,35 @@
   }
 
   function handleInitMessage(message) {
-    myId = message.id;
-    mySessionId = message.sessionId;
+  myId = message.id;
+  mySessionId = message.sessionId;
 
-    const savedName = localStorage.getItem("chatUserName");
-    if (savedName && nameInput) {
-      nameInput.value = savedName;
-      sendMessage({ type: "setName", name: savedName });
-    } else if (message.name) {
-      localStorage.setItem("chatUserName", message.name);
-      if (nameInput) nameInput.value = message.name;
-    }
-
-    hideNameModal();
+  // Автоматически генерируем имя пользователя
+  const randomNumber = Math.floor(Math.random() * 10000);
+  const autoName = `User${randomNumber}`;
+  
+  // Сохраняем в localStorage
+  localStorage.setItem("chatUserName", autoName);
+  
+  // Устанавливаем в поле ввода
+  if (nameInput) {
+    nameInput.value = autoName;
   }
+
+  // Отправляем имя на сервер
+  setTimeout(() => {
+    if (isConnected) {
+      sendMessage({ type: "setName", name: autoName });
+    }
+  }, 500);
+
+  // Скрываем модальное окно имени (на всякий случай)
+  if (nameModal) {
+    nameModal.classList.add("hidden");
+  }
+
+  console.log(`✅ Auto-generated name: ${autoName}`);
+}
 
   function handleHistoryMessage(message) {
     if (!historyLoaded && message.history) {
@@ -478,19 +488,19 @@
     }
   }
 
-  function handleInitialName() {
-    const name = initialNameInput.value.trim();
-    if (name) {
-      localStorage.setItem("chatUserName", name);
-      hideNameModal();
-      if (isConnected && myId) {
-        // Ждем инициализации перед отправкой имени
-        setTimeout(() => {
-          sendMessage({ type: "setName", name });
-        }, 1000);
-      }
-    }
-  }
+  // function handleInitialName() {
+  //   const name = initialNameInput.value.trim();
+  //   if (name) {
+  //     localStorage.setItem("chatUserName", name);
+  //     hideNameModal();
+  //     if (isConnected && myId) {
+  //       // Ждем инициализации перед отправкой имени
+  //       setTimeout(() => {
+  //         sendMessage({ type: "setName", name });
+  //       }, 1000);
+  //     }
+  //   }
+  // }
 
   function handleMessageSubmit(e) {
     e.preventDefault();
