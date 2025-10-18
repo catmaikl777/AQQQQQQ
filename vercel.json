@@ -1,6 +1,10 @@
 {
   "version": 2,
   "name": "fire-cat-chat",
+  "scripts": {
+    "vercel-build": "npm run build",
+    "build": ""
+  },
   "builds": [
     {
       "src": "package.json",
