@@ -431,40 +431,40 @@
     voiceMessageBtn.classList.remove("recording");
   }
 
-  function cancelVoiceRecording() {
-    if (!isRecording) return;
+ function cancelVoiceRecording() {
+  if (!isRecording) return;
 
-    mediaRecorder.stop();
-    isRecording = false;
+  mediaRecorder.stop();
+  isRecording = false;
 
-    // Останавливаем все потоки
-    mediaRecorder.stream.getTracks().forEach((track) => track.stop());
+  // Останавливаем все потоки
+  mediaRecorder.stream.getTracks().forEach((track) => track.stop());
 
-    // Очищаем интервалы
-    clearInterval(recordingTimer);
-    clearInterval(visualizationInterval);
+  // Очищаем интервалы
+  clearInterval(recordingTimer);
+  clearInterval(visualizationInterval);
 
-    // Сбрасываем визуализацию
-    visualizationBars.forEach((bar) => {
-      bar.style.height = "2px";
-      bar.style.background = "var(--primary-red)";
-    });
+  // Сбрасываем визуализацию
+  visualizationBars.forEach((bar) => {
+    bar.style.height = "2px";
+    bar.style.background = "var(--primary-red)";
+  });
 
-    // Закрываем AudioContext
-    if (audioContext) {
-      audioContext.close();
-      audioContext = null;
-    }
-
-    // Сбрасываем данные
-    audioChunks = [];
-
-    // Скрываем модальное окно
-    voiceRecordModal.classList.add("hidden");
-    voiceMessageBtn.classList.remove("recording");
-
-    showSystemMessage("❌ Запись отменена");
+  // Закрываем AudioContext
+  if (audioContext) {
+    audioContext.close();
+    audioContext = null;
   }
+
+  // Сбрасываем данные
+  audioChunks = [];
+
+  // Скрываем модальное окно
+  voiceRecordModal.classList.add("hidden");
+  voiceMessageBtn.classList.remove("recording");
+
+  showSystemMessage("❌ Запись отменена");
+}
 
   async function handleRecordingStop() {
     try {
@@ -677,8 +677,9 @@
   }
 
   function getWebSocketUrl() {
-    if (window.location.hostname.includes("vercel.app")) {
-      return "wss://aqqqqqq-2.onrender.com";
+    // Для продакшена - ваш backend сервер
+    if (window.location.hostname.includes('vercel.app')) {
+      return "wss://aqqqqqq-2.onrender.com"; // Замените на ваш сервер
     }
     return "ws://localhost:3000";
   }
@@ -781,9 +782,13 @@
         break;
       case "message":
         showMessage(message);
+        notifyNewMessage(message);
         break;
       case "system":
         showSystemMessage(message.text);
+        if (message.text && (message.text.includes("вошёл") || message.text.includes("вышел"))) {
+          notifySystemEvent("👤 Изменение участников", message.text);
+        }
         break;
       case "action":
         showActionMessage(message);
@@ -806,26 +811,16 @@
         break;
       case "private":
         handlePrivateMessage(message);
-        break;
-      case "private_sent":
-        showSystemMessage("✅ Личное сообщение отправлено");
-        break;
-      case "message":
-        notifyNewMessage(message);
-        break;
-      case "private":
         showNotification(`🔒 Личное сообщение от ${message.name}`, {
           body: message.text,
           tag: "private-message",
           requireInteraction: true,
         });
         break;
-      case "system":
-        if (message.text.includes("вошёл") || message.text.includes("вышел")) {
-          notifySystemEvent("👤 Изменение участников", message.text);
-        }
+      case "private_sent":
+        showSystemMessage("✅ Личное сообщение отправлено");
         break;
-
+      
       // WebRTC сообщения
       case "call_invite":
         handleCallInvite(message);
@@ -902,13 +897,14 @@
       nameInput.value = autoName;
     }
 
-    // Отправляем имя на сервер
-    setTimeout(() => {
-      if (isConnected) {
-        sendMessage({ type: "setName", name: autoName });
-      }
-    }, 500);
+  // Отправляем имя на сервер
+  setTimeout(() => {
+    if (isConnected) {
+      sendMessage({ type: "setName", name: autoName });
+    }
+  }, 500);
 
+  
     console.log(`✅ Auto-generated name: ${autoName}`);
   }
 
@@ -1517,10 +1513,7 @@
     try {
       showSystemMessage("🎥 Запрашиваем доступ к камере и микрофону...");
       await initializeLocalStream();
-
       isCallInitiator = true;
-      showVideoCallUI();
-
       sendMessage({ type: "create_room" });
       showSystemMessage("👥 Создаем групповой звонок...");
     } catch (error) {
@@ -1528,9 +1521,6 @@
       showSystemMessage(
         "❌ Не удалось начать звонок. Проверьте разрешения для камеры/микрофона."
       );
-
-      isCallInitiator = false;
-      hideVideoCallUI();
     }
   }
 
@@ -1620,24 +1610,28 @@
 
     currentRoomId = message.roomId;
     isInCall = true;
-
-    if (!videoCallContainer.classList.contains("hidden")) {
-      console.log("✅ Video call UI already visible");
-    } else {
-      console.log("🔄 Showing video call UI for call starter");
-      showVideoCallUI();
-    }
-
     showSystemMessage(`📞 Звонок начат с ${message.targetUserName}`);
-    updateCallButtons();
   }
 
   function handleRoomCreated(message) {
     currentRoomId = message.roomId;
     isInCall = true;
-
     showVideoCallUI();
     showSystemMessage(message.message || "✅ Комната создана");
+
+    // ИСПРАВЛЕНИЕ: Инициализируем локальный поток если еще не сделали
+    if (!localStream) {
+      initializeLocalStream()
+        .then(() => {
+          console.log("✅ Local stream initialized for room creator");
+        })
+        .catch((error) => {
+          console.error("❌ Failed to initialize local stream:", error);
+          showSystemMessage(
+            "⚠️ Звонок создан, но нет доступа к камере/микрофону"
+          );
+        });
+    }
 
     if (!localStream) {
       initializeLocalStream()
@@ -1710,139 +1704,10 @@
           : "Звонок завершен"
       }`
     );
-
-    if (isInCall && currentRoomId === message.roomId) {
-      endCall();
-    }
+    endCall();
   }
 
-  function setupConnectionStateHandlers(pc, targetSessionId) {
-    pc.onconnectionstatechange = () => {
-      console.log(
-        `🔗 Connection state for ${targetSessionId}: ${pc.connectionState}`
-      );
-
-      if (pc.connectionState === "connected") {
-        console.log(`✅ Successfully connected to ${targetSessionId}`);
-        updateCallStatus("connected");
-      } else if (pc.connectionState === "disconnected") {
-        console.warn(
-          `⚠️ Connection disconnected with ${targetSessionId}, attempting restore...`
-        );
-        updateCallStatus("disconnected");
-
-        setTimeout(() => {
-          if (currentRoomId && peerConnections.has(targetSessionId)) {
-            const checkPc = peerConnections.get(targetSessionId);
-            if (
-              checkPc.connectionState === "disconnected" ||
-              checkPc.connectionState === "failed"
-            ) {
-              console.log(`🔄 Restarting connection with ${targetSessionId}`);
-              restartConnection(targetSessionId);
-            }
-          }
-        }, 3000);
-      } else if (pc.connectionState === "failed") {
-        console.error(`❌ Connection failed with ${targetSessionId}`);
-        updateCallStatus("failed");
-        restartConnection(targetSessionId);
-      }
-    };
-
-    pc.oniceconnectionstatechange = () => {
-      console.log(
-        `🧊 ICE connection state for ${targetSessionId}: ${pc.iceConnectionState}`
-      );
-
-      if (pc.iceConnectionState === "disconnected") {
-        console.warn(
-          `🧊 ICE disconnected with ${targetSessionId}, checking connection...`
-        );
-
-        setTimeout(() => {
-          if (
-            pc.iceConnectionState === "disconnected" ||
-            pc.iceConnectionState === "failed"
-          ) {
-            console.log(
-              `🔄 ICE still disconnected, restarting connection with ${targetSessionId}`
-            );
-            restartIceConnection(pc, targetSessionId);
-          }
-        }, 5000);
-      } else if (pc.iceConnectionState === "failed") {
-        console.error(`🧊 ICE failed with ${targetSessionId}`);
-        restartIceConnection(pc, targetSessionId);
-      } else if (pc.iceConnectionState === "connected") {
-        console.log(`🧊 ICE connected to ${targetSessionId}`);
-        updateCallStatus("connected");
-      }
-    };
-  }
-
-  function restartIceConnection(pc, targetSessionId) {
-    if (!currentRoomId) return;
-
-    console.log(`🔄 Restarting ICE connection for ${targetSessionId}`);
-
-    try {
-      pc.createOffer({
-        iceRestart: true,
-        offerToReceiveAudio: true,
-        offerToReceiveVideo: true,
-      })
-        .then((offer) => {
-          return pc.setLocalDescription(offer);
-        })
-        .then(() => {
-          console.log(`✅ ICE restart offer created for ${targetSessionId}`);
-
-          sendMessage({
-            type: "webrtc_offer",
-            roomId: currentRoomId,
-            targetSessionId: targetSessionId,
-            offer: pc.localDescription,
-            iceRestart: true,
-          });
-        })
-        .catch((error) => {
-          console.error(
-            `❌ Error during ICE restart for ${targetSessionId}:`,
-            error
-          );
-          restartConnection(targetSessionId);
-        });
-    } catch (error) {
-      console.error(
-        `❌ Error initiating ICE restart for ${targetSessionId}:`,
-        error
-      );
-      restartConnection(targetSessionId);
-    }
-  }
-
-  function restartConnection(targetSessionId) {
-    if (!currentRoomId) return;
-
-    console.log(`🔄 Performing full connection restart for ${targetSessionId}`);
-
-    if (peerConnections.has(targetSessionId)) {
-      const oldPc = peerConnections.get(targetSessionId);
-      oldPc.close();
-      peerConnections.delete(targetSessionId);
-
-      removeVideoElement(targetSessionId);
-    }
-
-    setTimeout(() => {
-      if (currentRoomId && roomUsers.has(targetSessionId)) {
-        console.log(`🔗 Creating new connection for ${targetSessionId}`);
-        createOffer(targetSessionId);
-      }
-    }, 2000);
-  }
-
+  // WebRTC соединения - ИСПРАВЛЕННЫЕ
   async function createPeerConnection(targetSessionId) {
     console.log(`🔗 Creating peer connection for: ${targetSessionId}`);
 
@@ -1851,8 +1716,7 @@
 
       pc.pendingIceCandidates = [];
 
-      setupConnectionStateHandlers(pc, targetSessionId);
-
+      
       pc.ontrack = (event) => {
         console.log(
           "📹 Received remote track from:",
@@ -1907,6 +1771,7 @@
     let remoteVideo = document.getElementById(remoteVideoId);
     let videoContainer = document.getElementById(`videoContainer_${sessionId}`);
 
+    // ИСПРАВЛЕНИЕ: Проверяем, не существует ли уже контейнер
     if (!videoContainer) {
       videoContainer = document.createElement("div");
       videoContainer.className = "video-container";
@@ -1919,6 +1784,7 @@
       remoteVideo.className = "remote-video";
       remoteVideo.muted = false;
 
+      // ИСПРАВЛЕНИЕ: Добавляем обработчики ошибок для видео
       remoteVideo.onerror = (e) => {
         console.error(`❌ Video error for ${sessionId}:`, e);
       };
@@ -1945,7 +1811,7 @@
       }
     }
 
-    if (remoteVideo && remoteVideo.srcObject !== remoteStream) {
+    if (remoteVideo) {
       try {
         remoteVideo.srcObject = remoteStream;
         console.log(`✅ Remote video stream set for ${sessionId}`);
@@ -1964,33 +1830,30 @@
 
     if (peerConnections.has(targetSessionId)) {
       const existingPc = peerConnections.get(targetSessionId);
-
-      if (
-        existingPc.signalingState === "have-local-offer" ||
-        existingPc.connectionState === "connected" ||
-        existingPc.iceConnectionState === "connected"
-      ) {
-        console.log(
-          `⏳ Connection with ${targetSessionId} already in progress or established, skipping duplicate offer`
-        );
+      if (existingPc.signalingState === "have-local-offer") {
+        console.log(`⏳ Already creating offer for ${targetSessionId}, waiting...`);
         return;
       }
-
-      if (
-        existingPc.signalingState === "closed" ||
-        existingPc.connectionState === "failed" ||
-        existingPc.iceConnectionState === "failed"
-      ) {
-        console.log(`🔄 Closing failed connection with ${targetSessionId}`);
-        existingPc.close();
-        peerConnections.delete(targetSessionId);
+      
+      if (existingPc.signalingState === "stable" || existingPc.connectionState === "connected") {
+        console.log(`✅ Already connected to ${targetSessionId}`);
+        return;
       }
     }
+
+    if (peerConnections.has(targetSessionId)) {
+        const oldPc = peerConnections.get(targetSessionId);
+        if (oldPc.signalingState === "closed" || oldPc.connectionState === "failed") {
+          try { oldPc.close(); } catch (e) {}
+          peerConnections.delete(targetSessionId);
+        }
+      }
 
     try {
       const pc = await createPeerConnection(targetSessionId);
 
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      // Ждем стабилизации перед созданием offer
+      await new Promise(resolve => setTimeout(resolve, 300));
 
       const offer = await pc.createOffer({
         offerToReceiveAudio: true,
@@ -2034,7 +1897,8 @@
 
   function handleUserJoined(message) {
     console.log(`👤 User ${message.userName} joined the call`);
-
+    
+    // Обновляем список пользователей в комнате
     if (!roomUsers.has(message.sessionId)) {
       roomUsers.set(message.sessionId, {
         userId: message.userId,
@@ -2043,31 +1907,19 @@
       });
 
       updateParticipantsCount(roomUsers.size);
-
-      if (
-        isInCall &&
-        message.sessionId !== mySessionId &&
-        !peerConnections.has(message.sessionId)
-      ) {
-        console.log(
-          `🔗 Considering connection with new user: ${message.userName}`
-        );
-
-        setTimeout(() => {
-          if (currentRoomId && !peerConnections.has(message.sessionId)) {
-            const shouldCreateOffer = mySessionId < message.sessionId;
-
-            if (shouldCreateOffer) {
-              console.log(`🎯 We should create offer for ${message.userName}`);
-              createOffer(message.sessionId);
-            } else {
-              console.log(
-                `🎯 We should wait for offer from ${message.userName}`
-              );
-              createPeerConnection(message.sessionId);
-            }
-          }
-        }, 2000);
+      
+      // Если это не мы и соединения нет, создаем его
+      if (isInCall && message.sessionId !== mySessionId && !peerConnections.has(message.sessionId)) {
+        console.log(`🔗 Creating connection with new user: ${message.userName}`);
+        
+        // Используем логику приоритета для избежания конфликтов
+        const shouldCreateOffer = mySessionId < message.sessionId;
+        
+        if (shouldCreateOffer) {
+          setTimeout(() => {
+            createOffer(message.sessionId);
+          }, 1000);
+        }
       }
     }
   }
@@ -2089,6 +1941,10 @@
 
     console.log(`🔗 Need to connect to ${otherUsers.length} other users`);
 
+    // Определяем, кто должен создавать offer
+    // Используем простую логику: пользователь с меньшим sessionId создает offer
+    const shouldCreateOffer = mySessionId < otherUsers[0]?.sessionId;
+
     for (let i = 0; i < otherUsers.length; i++) {
       const user = otherUsers[i];
 
@@ -2097,11 +1953,17 @@
           `🔗 Setting up connection with: ${user.userName} (${user.sessionId})`
         );
 
+        // Добавляем задержку между созданием соединений
         await new Promise((resolve) => setTimeout(resolve, 1000 + i * 500));
 
         try {
-          await createOffer(user.sessionId);
-          console.log(`✅ Created offer for ${user.userName}`);
+          if (shouldCreateOffer) {
+            await createOffer(user.sessionId);
+            console.log(`✅ Created offer for ${user.userName}`);
+          } else {
+            console.log(`⏳ Waiting for offer from ${user.userName}`);
+            // Будем ждать offer от другого пользователя
+          }
         } catch (error) {
           console.error(
             `❌ Failed to setup connection with ${user.userName}:`,
@@ -2112,105 +1974,269 @@
     }
   }
 
-  function handleUserLeft(message) {
-    console.log(`👤 User ${message.userName} left the call`);
+  async function createPeerConnection(targetSessionId) {
+    console.log(`🔗 Creating peer connection for: ${targetSessionId}`);
 
-    roomUsers.delete(message.sessionId);
+    try {
+      const pc = new RTCPeerConnection(rtcConfig);
 
-    if (peerConnections.has(message.sessionId)) {
-      peerConnections.get(message.sessionId).close();
-      peerConnections.delete(message.sessionId);
-    }
+      // Инициализируем массив для отложенных ICE кандидатов
+      pc.pendingIceCandidates = [];
 
-    removeVideoElement(message.sessionId);
-    updateParticipantsCount(roomUsers.size);
-
-    showSystemMessage(`👤 ${message.userName} покинул звонок`);
-
-    if (roomUsers.size === 1 && roomUsers.has(mySessionId)) {
-      showSystemMessage(
-        "ℹ️ Все участники покинули звонок. Вы можете завершить его."
-      );
-    }
-  }
-
-  function removeVideoElement(sessionId) {
-    const videoContainer = document.getElementById(
-      `videoContainer_${sessionId}`
-    );
-    if (videoContainer) {
-      videoContainer.remove();
-      setTimeout(updateVideoGridLayout, 100);
-    }
-  }
-
-  function updateRoomUsers() {
-    if (currentRoomId) {
-      sendMessage({
-        type: "get_room_users",
-        roomId: currentRoomId,
-      });
-    }
-  }
-
-  function updateCallStatus(state) {
-    if (callStatusEl) {
-      const statusMap = {
-        connected: "✅ Подключено",
-        connecting: "🔄 Подключение...",
-        disconnected: "⚠️ Соединение прервано",
-        failed: "❌ Ошибка соединения",
-        closed: "🔌 Соединение закрыто",
+      // Обработчик получения удаленных потоков
+      pc.ontrack = (event) => {
+        console.log(
+          "📹 Received remote track from:",
+          targetSessionId,
+          event.streams
+        );
+        if (event.streams && event.streams[0]) {
+          showRemoteVideo(targetSessionId, event.streams[0]);
+        }
       };
-      callStatusEl.textContent = statusMap[state] || state;
+
+      // Обработчик ICE кандидатов
+      pc.onicecandidate = (event) => {
+        if (event.candidate && currentRoomId) {
+          console.log(`🧊 Sending ICE candidate to ${targetSessionId}`);
+          sendMessage({
+            type: "webrtc_ice_candidate",
+            roomId: currentRoomId,
+            targetSessionId: targetSessionId,
+            candidate: event.candidate,
+          });
+        } else if (!event.candidate) {
+          console.log(`✅ All ICE candidates gathered for ${targetSessionId}`);
+        }
+      };
+
+      // Обработчики состояния соединения
+      pc.onconnectionstatechange = () => {
+        console.log(
+          `🔗 Connection state for ${targetSessionId}: ${pc.connectionState}`
+        );
+
+        if (pc.connectionState === "connected") {
+          console.log(`✅ Successfully connected to ${targetSessionId}`);
+          updateCallStatus("connected");
+
+          // Очищаем отложенные кандидаты при успешном соединении
+          if (pc.pendingIceCandidates) {
+            pc.pendingIceCandidates = [];
+          }
+        } else if (pc.connectionState === "failed") {
+          console.warn(`❌ Connection failed with ${targetSessionId}`);
+        } else if (pc.connectionState === "closed") {
+          console.log(`🔒 Connection closed with ${targetSessionId}`);
+        }
+      };
+
+      // Обработчик ICE соединения
+      pc.oniceconnectionstatechange = () => {
+        console.log(
+          `🧊 ICE connection state for ${targetSessionId}: ${pc.iceConnectionState}`
+        );
+
+        if (pc.iceConnectionState === "connected") {
+          console.log(`✅ ICE connected to ${targetSessionId}`);
+        } else if (pc.iceConnectionState === "failed") {
+          console.warn(`❌ ICE failed with ${targetSessionId}`);
+        }
+      };
+
+      // Обработчик состояния сигналинга
+      pc.onsignalingstatechange = () => {
+        console.log(
+          `📡 Signaling state for ${targetSessionId}: ${pc.signalingState}`
+        );
+
+        // Когда signaling state становится stable, обрабатываем отложенные кандидаты
+        if (pc.signalingState === "stable" && pc.remoteDescription) {
+          processPendingIceCandidates(pc, targetSessionId);
+        }
+      };
+
+      // Добавляем локальные треки
+      if (localStream) {
+        localStream.getTracks().forEach((track) => {
+          try {
+            pc.addTrack(track, localStream);
+            console.log(
+              `✅ Added local track to connection with ${targetSessionId}`
+            );
+          } catch (error) {
+            console.error("Error adding track:", error);
+          }
+        });
+      }
+
+      peerConnections.set(targetSessionId, pc);
+      return pc;
+    } catch (error) {
+      console.error(
+        `❌ Error creating peer connection for ${targetSessionId}:`,
+        error
+      );
+      throw error;
     }
   }
 
-  function updateParticipantsCount(count) {
-    participantsCount = count;
-
-    const displayCount = Math.max(count, 1);
-
-    if (participantsCountEl) {
-      participantsCountEl.textContent = `Участников: ${displayCount}`;
-
-      if (displayCount > 2) {
-        participantsCountEl.style.color = "#fbbf24";
-        participantsCountEl.style.fontWeight = "bold";
-      } else {
-        participantsCountEl.style.color = "";
-        participantsCountEl.style.fontWeight = "";
-      }
+  function cleanupPendingCandidates(sessionId) {
+    const pc = peerConnections.get(sessionId);
+    if (pc && pc.pendingIceCandidates) {
+      console.log(
+        `🧹 Cleaning up ${pc.pendingIceCandidates.length} pending ICE candidates for ${sessionId}`
+      );
+      pc.pendingIceCandidates = [];
     }
+  }
+
+  function debugConnections() {
+    console.log("🔍 DEBUG CONNECTIONS:");
+    console.log(`Room Users: ${roomUsers.size}`);
+    roomUsers.forEach((user, sessionId) => {
+      console.log(
+        `- ${user.userName} (${sessionId}) ${
+          sessionId === mySessionId ? "(You)" : ""
+        }`
+      );
+    });
+
+    console.log(`Peer Connections: ${peerConnections.size}`);
+    peerConnections.forEach((pc, sessionId) => {
+      console.log(
+        `- ${sessionId}: ${pc.connectionState} (ICE: ${pc.iceConnectionState})`
+      );
+    });
 
     console.log(
-      `👥 Participants count updated: ${displayCount} (actual: ${count})`
+      `Video Elements: ${document.querySelectorAll(".video-container").length}`
     );
   }
+
+  // Вызывайте эту функцию для отладки при необходимости
 
   function updateVideoGridLayout() {
     const videoGrid = document.querySelector(".video-grid");
     if (!videoGrid) return;
+    const count = videoGrid.querySelectorAll(".video-container").length;
+    if (count <= 1) {
+      videoGrid.style.gridTemplateColumns = "1fr";
+    } else if (count === 2) {
+      videoGrid.style.gridTemplateColumns = "1fr 1fr";
+    } else if (count <= 4) {
+      videoGrid.style.gridTemplateColumns = "1fr 1fr";
+    } else {
+      videoGrid.style.gridTemplateColumns = "1fr 1fr 1fr";
+    }
+  }
 
-    const videoContainers = videoGrid.querySelectorAll(".video-container");
-    const containerCount = videoContainers.length;
+  function restartConnection(sessionId) {
+    try {
+      const pc = peerConnections.get(sessionId);
+      if (pc) {
+        try { pc.close(); } catch (e) {}
+        peerConnections.delete(sessionId);
+      }
+      if (currentRoomId) {
+        createOffer(sessionId);
+      }
+    } catch (e) {
+      console.warn("⚠️ Failed to restart connection:", e);
+    }
+  }
 
-    videoGrid.className = "video-grid";
-    videoContainers.forEach((container) => {
-      container.className = "video-container";
+  function refreshAllConnections() {
+    console.log("🔄 Refreshing all peer connections...");
+
+    const disconnectedConnections = Array.from(
+      peerConnections.entries()
+    ).filter(
+      ([sessionId, pc]) =>
+        pc.connectionState !== "connected" &&
+        pc.connectionState !== "connecting"
+    );
+
+    console.log(
+      `👥 Participants count updated: ${displayCount} (actual: ${count})`
+    );
+
+    // Обновляем только отключенные соединения с задержкой
+    disconnectedConnections.forEach(async ([sessionId], index) => {
+      await new Promise((resolve) => setTimeout(resolve, index * 2000)); // 2 секунды между каждым
+      if (currentRoomId && peerConnections.has(sessionId)) {
+        createOffer(sessionId);
+      }
+    });
+  }
+
+  // Увеличьте интервал проверки соединений
+  // setInterval(() => {
+  //   if (isInCall && peerConnections.size > 0) {
+  //     let disconnectedCount = 0;
+  //     peerConnections.forEach((pc, sessionId) => {
+  //       if (
+  //         pc.connectionState !== "connected" &&
+  //         pc.connectionState !== "connecting"
+  //       ) {
+  //         disconnectedCount++;
+  //         console.log(
+  //           `⚠️ Connection with ${sessionId} is ${pc.connectionState}`
+  //         );
+  //       }
+  //     });
+
+  //     if (disconnectedCount > 0 && disconnectedCount <= 4) {
+  //       // Ограничиваем количество одновременных переподключений
+  //       console.log(`🔄 ${disconnectedCount} connections need refresh`);
+  //       refreshAllConnections();
+  //     }
+  //   }
+  // }, 30000); // Увеличиваем до 30 секунд
+
+  async function handleRoomUsers(message) {
+    console.log("👥 Room users received:", message.users);
+
+    roomUsers.clear();
+    message.users.forEach((user) => {
+      roomUsers.set(user.sessionId, user);
     });
 
-    if (containerCount <= 2) {
-      videoGrid.style.gridTemplateColumns = "1fr 1fr";
-    } else if (containerCount <= 4) {
-      videoGrid.style.gridTemplateColumns = "1fr 1fr";
-      videoGrid.style.gridTemplateRows = "1fr 1fr";
-    } else {
-      videoGrid.style.gridTemplateColumns =
-        "repeat(auto-fit, minmax(300px, 1fr))";
-    }
+    updateParticipantsCount(message.users.length);
 
-    console.log(`🎬 Video grid updated: ${containerCount} participants`);
+    // Обновляем компоновку сетки
+    setTimeout(updateVideoGridLayout, 100);
+
+    // Создаем соединения с другими пользователями с задержкой
+    const otherUsers = message.users.filter(
+      (user) => user.sessionId !== mySessionId
+    );
+
+    console.log(`🔗 Need to connect to ${otherUsers.length} other users`);
+
+    // Создаем соединения последовательно с задержкой
+    for (let i = 0; i < otherUsers.length; i++) {
+      const user = otherUsers[i];
+
+      if (!peerConnections.has(user.sessionId)) {
+        console.log(
+          `🔗 Setting up connection with: ${user.userName} (${user.sessionId})`
+        );
+
+        // Добавляем задержку между созданием соединений
+        await new Promise((resolve) => setTimeout(resolve, 1000 + i * 500));
+
+        try {
+          await createOffer(user.sessionId);
+          console.log(`✅ Connection setup initiated for ${user.userName}`);
+        } catch (error) {
+          console.error(
+            `❌ Failed to setup connection with ${user.userName}:`,
+            error
+          );
+        }
+      }
+    }
   }
 
   async function handleWebRTCOffer(message) {
@@ -2288,10 +2314,9 @@
       }
 
       if (pc.signalingState !== "have-local-offer") {
-        console.warn(
-          `⚠️ Wrong signaling state for answer: ${pc.signalingState}, expected have-local-offer`
-        );
-
+        console.warn(`⚠️ Wrong signaling state for answer: ${pc.signalingState}, expected have-local-offer`);
+        
+        // Если соединение в плохом состоянии, пересоздаем его
         if (pc.signalingState === "closed" || pc.connectionState === "failed") {
           console.log(`🔄 Recreating connection with ${message.fromSessionId}`);
           peerConnections.delete(message.fromSessionId);
@@ -2308,7 +2333,8 @@
       await processPendingIceCandidates(pc, message.fromSessionId);
     } catch (error) {
       console.error("❌ Error handling WebRTC answer:", error);
-
+      
+      // Более детальная обработка ошибок
       if (error.toString().includes("wrong state: stable")) {
         console.log(
           `✅ Answer already processed for ${message.fromSessionId}, connection is stable`
@@ -2349,8 +2375,7 @@
         return;
       }
 
-      const iceCandidate = new RTCIceCandidate(message.candidate);
-
+      // Если remote description еще не установлен, сохраняем кандидата в очередь
       if (!pc.remoteDescription) {
         console.log(
           `⏳ Queueing ICE candidate - waiting for remote description from ${message.fromSessionId}`
@@ -2359,87 +2384,121 @@
         if (!pc.pendingIceCandidates) {
           pc.pendingIceCandidates = [];
         }
-        pc.pendingIceCandidates.push(iceCandidate);
+        pc.pendingIceCandidates.push(new RTCIceCandidate(message.candidate));
         return;
       }
 
-      try {
-        await pc.addIceCandidate(iceCandidate);
-        console.log(`🧊 ICE candidate added from ${message.fromSessionId}`);
-
-        if (pc.iceConnectionState === "checking") {
-          console.log(
-            `🔍 ICE checking in progress for ${message.fromSessionId}`
-          );
-        }
-      } catch (addError) {
-        if (
-          addError.toString().includes("duplicate") ||
-          addError.toString().includes("already")
-        ) {
-          console.log(
-            `⚠️ Duplicate ICE candidate from ${message.fromSessionId}, ignoring`
-          );
-          return;
-        }
-        console.error(
-          `❌ Error adding ICE candidate from ${message.fromSessionId}:`,
-          addError
-        );
-      }
+      // Пытаемся добавить кандидат
+      await pc.addIceCandidate(new RTCIceCandidate(message.candidate));
+      console.log(`🧊 ICE candidate added from ${message.fromSessionId}`);
     } catch (error) {
       console.error("❌ Error handling ICE candidate:", error);
+      // Не критичная ошибка - продолжаем работу
     }
+  }
+
+  function handleUserLeft(message) {
+    console.log(`👤 User ${message.userName} left the call`);
+    
+    roomUsers.delete(message.sessionId);
+
+    if (peerConnections.has(message.sessionId)) {
+      peerConnections.get(message.sessionId).close();
+      peerConnections.delete(message.sessionId);
+    }
+
+    removeVideoElement(message.sessionId);
+    updateParticipantsCount(roomUsers.size);
+    
+    showSystemMessage(`👤 ${message.userName} покинул звонок`);
+  }
+
+  function removeVideoElement(sessionId) {
+    const videoContainer = document.getElementById(
+      `videoContainer_${sessionId}`
+    );
+    if (videoContainer) {
+      videoContainer.remove();
+      // Обновляем компоновку сетки после удаления
+      setTimeout(updateVideoGridLayout, 100);
+    }
+  }
+
+  function updateRoomUsers() {
+    if (currentRoomId) {
+      sendMessage({
+        type: "get_room_users",
+        roomId: currentRoomId,
+      });
+    }
+  }
+
+  function updateCallStatus(state) {
+    if (callStatusEl) {
+      const statusMap = {
+        connected: "✅ Подключено",
+        connecting: "🔄 Подключение...",
+        disconnected: "⚠️ Соединение прервано",
+        failed: "❌ Ошибка соединения",
+        closed: "🔌 Соединение закрыто",
+      };
+      callStatusEl.textContent = statusMap[state] || state;
+    }
+  }
+
+  function debugRoomUsers() {
+    console.log("🔍 DEBUG Room Users:");
+    console.log(`Total in room: ${roomUsers.size}`);
+    roomUsers.forEach((user, sessionId) => {
+      console.log(
+        `- ${user.userName} (${sessionId}) ${
+          sessionId === mySessionId ? "(You)" : ""
+        }`
+      );
+    });
+
+    console.log("🔍 DEBUG Peer Connections:");
+    console.log(`Total peer connections: ${peerConnections.size}`);
+    peerConnections.forEach((pc, sessionId) => {
+      console.log(`- ${sessionId}: ${pc.connectionState}`);
+    });
+
+    console.log("🔍 DEBUG Video Elements:");
+    const videoContainers = document.querySelectorAll(".video-container");
+    console.log(`Total video containers: ${videoContainers.length}`);
+  }
+
+  // Вызывайте эту функцию для отладки:
+  // debugRoomUsers();
+
+  function updateParticipantsCount(count) {
+    participantsCount = count;
+    if (participantsCountEl) {
+      participantsCountEl.textContent = `Участников: ${count}`;
+      // Добавляем визуальную индикацию если участников больше 2
+      if (count > 2) {
+        participantsCountEl.style.color = "#fbbf24";
+        participantsCountEl.style.fontWeight = "bold";
+      } else {
+        participantsCountEl.style.color = "";
+        participantsCountEl.style.fontWeight = "";
+      }
+    }
+
+    // Логируем для отладки
+    console.log(`👥 Participants count updated: ${count}`);
+    debugRoomUsers();
   }
 
   // UI управления звонком
   function showVideoCallUI() {
-    console.log("🎬 Showing video call UI");
-
-    const messagesEl = document.getElementById("messages");
-    const messageForm = document.getElementById("messageForm");
-    const emojiPanel = document.querySelector(".emoji-panel");
-
-    if (messagesEl) messagesEl.style.display = "none";
-    if (messageForm) messageForm.style.display = "none";
-    if (emojiPanel) emojiPanel.style.display = "none";
-
     videoCallContainer.classList.remove("hidden");
-    videoCallContainer.style.display = "flex";
-
-    updateCallStatus("connecting");
     updateCallButtons();
-
-    updateParticipantsCount(roomUsers.size || 1);
-
-    console.log(
-      "✅ Video call UI shown - container visible:",
-      !videoCallContainer.classList.contains("hidden")
-    );
+    updateParticipantsCount(1);
   }
 
   function hideVideoCallUI() {
-    console.log("🎬 Hiding video call UI");
-
-    const messagesEl = document.getElementById("messages");
-    const messageForm = document.getElementById("messageForm");
-    const emojiPanel = document.querySelector(".emoji-panel");
-
-    if (messagesEl) {
-      messagesEl.style.display = "block";
-      setTimeout(() => {
-        scrollToBottom();
-      }, 100);
-    }
-    if (messageForm) messageForm.style.display = "flex";
-    if (emojiPanel) emojiPanel.style.display = "flex";
-
     videoCallContainer.classList.add("hidden");
-    videoCallContainer.style.display = "none";
-
-    updateCallStatus("disconnected");
-
-    console.log("✅ Video call UI completely hidden");
   }
 
   function updateCallButtons() {
