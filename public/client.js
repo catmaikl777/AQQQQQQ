@@ -93,6 +93,16 @@
         credential: "openrelayproject",
       },
       {
+        urls: "turn:openrelay.metered.ca:80?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
+        urls: "turn:openrelay.metered.ca:443?transport=tcp",
+        username: "openrelayproject",
+        credential: "openrelayproject",
+      },
+      {
         urls: "turn:turn.bistri.com:80",
         username: "homeo",
         credential: "homeo",
@@ -103,6 +113,12 @@
     bundlePolicy: "max-bundle",
     rtcpMuxPolicy: "require",
     iceServersProtocols: ["tcp", "udp"],
+  };
+
+  // Конфигурация с принудительным использованием TURN для строгих NAT
+  const rtcConfigRelay = {
+    ...rtcConfig,
+    iceTransportPolicy: "relay",
   };
 
   // Инициализация приложения
@@ -1924,14 +1940,29 @@
     }
   }
 
-  async function createPeerConnection(targetSessionId) {
+  async function createPeerConnection(targetSessionId, configOverride) {
     console.log(`🔗 Creating peer connection for: ${targetSessionId}`);
 
     try {
-      const pc = new RTCPeerConnection(rtcConfig);
+      const pc = new RTCPeerConnection(configOverride || rtcConfig);
 
       // Инициализируем массив для отложенных ICE кандидатов
       pc.pendingIceCandidates = [];
+
+      // Гарантируем наличие приемников для аудио/видео
+      try {
+        const hasVideoSender = localStream && localStream.getVideoTracks().length > 0;
+        const hasAudioSender = localStream && localStream.getAudioTracks().length > 0;
+
+        if (!hasVideoSender) {
+          pc.addTransceiver("video", { direction: "recvonly" });
+        }
+        if (!hasAudioSender) {
+          pc.addTransceiver("audio", { direction: "recvonly" });
+        }
+      } catch (e) {
+        console.warn("⚠️ Unable to add transceivers:", e);
+      }
 
       // Обработчик получения удаленных потоков
       pc.ontrack = (event) => {
@@ -1979,7 +2010,7 @@
           scheduleIceRestart(targetSessionId, "connectionstate disconnected");
         } else if (pc.connectionState === "failed") {
           console.warn(`❌ Connection failed with ${targetSessionId}`);
-          restartConnection(targetSessionId);
+          restartConnectionWithRelay(targetSessionId);
         } else if (pc.connectionState === "closed") {
           console.log(`🔒 Connection closed with ${targetSessionId}`);
         }
@@ -1998,7 +2029,7 @@
           scheduleIceRestart(targetSessionId, "ice disconnected");
         } else if (pc.iceConnectionState === "failed") {
           console.warn(`❌ ICE failed with ${targetSessionId}`);
-          restartConnection(targetSessionId);
+          restartConnectionWithRelay(targetSessionId);
         }
       };
 
@@ -2147,6 +2178,55 @@
       }
     } catch (e) {
       console.warn("⚠️ Failed to restart connection:", e);
+    }
+  }
+
+  async function createOfferWithConfig(targetSessionId, config) {
+    console.log(`📤 Creating offer (config override) for: ${targetSessionId}`);
+
+    const existingPc = peerConnections.get(targetSessionId);
+    if (existingPc) {
+      if (existingPc.signalingState === "have-local-offer") return;
+      if (
+        existingPc.signalingState === "stable" ||
+        existingPc.connectionState === "connected"
+      ) return;
+      try { existingPc.close(); } catch (_) {}
+      peerConnections.delete(targetSessionId);
+    }
+
+    try {
+      const pc = await createPeerConnection(targetSessionId, config);
+      await new Promise((r) => setTimeout(r, 300));
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true,
+      });
+      await pc.setLocalDescription(offer);
+      sendMessage({
+        type: "webrtc_offer",
+        roomId: currentRoomId,
+        targetSessionId,
+        offer,
+      });
+    } catch (e) {
+      console.error("❌ Error creating offer with config:", e);
+    }
+  }
+
+  function restartConnectionWithRelay(sessionId) {
+    try {
+      const pc = peerConnections.get(sessionId);
+      if (pc) {
+        try { pc.close(); } catch (e) {}
+        peerConnections.delete(sessionId);
+      }
+      if (currentRoomId) {
+        console.log(`🛰️ Fallback to TURN-only for ${sessionId}`);
+        createOfferWithConfig(sessionId, rtcConfigRelay);
+      }
+    } catch (e) {
+      console.warn("⚠️ Failed to restart (relay) connection:", e);
     }
   }
 
@@ -2586,8 +2666,8 @@
       }
 
       if (pc.connectionState === "connecting" && connectionTime > 15000) {
-        console.log(`🔄 Restarting stalled connection with ${sessionId}`);
-        restartConnection(sessionId);
+        console.log(`🛰️ Restarting stalled connection with TURN-only for ${sessionId}`);
+        restartConnectionWithRelay(sessionId);
       }
     });
   }, 5000);
